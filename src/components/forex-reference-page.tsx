@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { LoaderCircle, RotateCcw } from 'lucide-react';
+import { getForexSessionState } from '@/lib/market/forex-session';
 
 const currencies = ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD'];
 type RatesResponse = {
@@ -28,6 +29,7 @@ export function ForexReferencePage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [refresh, setRefresh] = useState(0);
+  const [now, setNow] = useState<Date | null>(null);
 
   const load = useCallback(async (signal: AbortSignal) => {
     setBusy(true);
@@ -54,6 +56,12 @@ export function ForexReferencePage() {
     return () => controller.abort();
   }, [load, refresh]);
 
+  useEffect(() => {
+    setNow(new Date());
+    const timer = window.setInterval(() => setNow(new Date()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const quoteOptions = currencies.filter((currency) => currency !== base);
   useEffect(() => {
     if (quote === base) setQuote(quoteOptions[0] || 'EUR');
@@ -64,6 +72,9 @@ export function ForexReferencePage() {
     const value = Number(amount);
     return Number.isFinite(value) && value >= 0 && selectedRate !== undefined ? value * selectedRate : null;
   }, [amount, selectedRate]);
+  const sessionState = now ? getForexSessionState(now) : null;
+  const sessionLabel = sessionState === 'open' ? 'Scheduled open' : sessionState === 'daily-break' ? 'Scheduled daily break' : sessionState === 'closed' ? 'Scheduled closed' : 'Checking schedule…';
+  const newYorkTime = now ? new Intl.DateTimeFormat(undefined, { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }).format(now) : '—';
 
   return <div className="feature-page">
     <header>
@@ -72,6 +83,12 @@ export function ForexReferencePage() {
       <p>Daily mid-market reference rates from Frankfurter. These are not broker quotes, intraday candles, or executable prices.</p>
     </header>
     <section className="feature-card">
+      <div className="forex-session-status">
+        <span className={`forex-session-dot ${sessionState ? `forex-session-${sessionState}` : ''}`} />
+        <div><b>{sessionLabel}</b><small>Indicative US broker schedule · New York time {newYorkTime}</small></div>
+        <span className={`forex-data-status ${data ? 'forex-data-available' : error ? 'forex-data-unavailable' : ''}`}>{data ? 'Reference data available' : error ? 'Reference data unavailable' : busy ? 'Checking reference feed…' : 'Reference data not loaded'}</span>
+      </div>
+      <p className="forex-session-note">Session hours follow <a href="https://www.oanda.com/us-en/trading/instruments/" target="_blank" rel="noreferrer">OANDA’s published US schedule</a>: approximately Sunday 17:05 through Friday 16:59 New York time, with a brief daily break. Holidays and other brokers’ schedules can differ. This schedule does not verify a live price feed.</p>
       <div className="forex-controls">
         <label>BASE CURRENCY<select value={base} onChange={(event) => setBase(event.target.value)}>{currencies.map((currency) => <option key={currency}>{currency}</option>)}</select></label>
         <label>QUOTE CURRENCY<select value={quote} onChange={(event) => setQuote(event.target.value)}>{quoteOptions.map((currency) => <option key={currency}>{currency}</option>)}</select></label>
