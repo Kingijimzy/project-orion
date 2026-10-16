@@ -9,7 +9,7 @@ Audit baseline: `main` at `83e75af`; this audit is being updated on `feature/ori
 | Home | Workspace links and current provider, sign-in, and in-session market state | Implemented in this branch; values are only shown when present in app state | `src/components/workspace-pages.tsx`, `src/components/orion-app.tsx` |
 | AI Chat | Authenticated conversation CRUD, provider/model selection, streamed responses, retry/stop, optional deterministic SMC context, transient chart screenshot attachment for OpenRouter vision models | Image input is catalogue-gated and size/type checked server-side. Images are sent to OpenRouter and are not persisted by Orion; provider retention follows OpenRouter terms. Authenticated live persistence has not been independently tested here | `src/components/orion-app.tsx`, `src/app/api/chat/route.ts`, `src/lib/ai/chat-validation.ts`, `src/lib/ai/provider.ts` |
 | Voice Orion | LiveKit room UI, short-lived authenticated room token, separate realtime agent worker | Foundation present; no LiveKit credentials or live voice session verified. UI now distinguishes room join from token creation | `src/components/voice-assistant-panel.tsx`, `src/app/api/livekit/token/route.ts`, `voice-agent/` |
-| Markets | Bybit V5 REST snapshots plus public kline WebSocket subscription, reconnect/heartbeat, category/timeframe, watchlist, freshness and closed/forming labels | Public linear `BTCUSDT` WebSocket subscription returned an acknowledgement and kline during a live smoke check; full browser UI reconnect behavior is still not E2E verified. No ticker/quote panel | `src/lib/market/bybit.ts`, `src/lib/market/bybit-websocket.ts`, `src/app/api/markets/`, `src/components/orion-app.tsx` |
+| Markets | Bybit V5 REST snapshots, 24-hour ticker panel, and public kline WebSocket subscription with reconnect/heartbeat; category/timeframe, watchlist, freshness and closed/forming labels | Live linear `BTCUSDT` REST ticker and public WebSocket subscription returned valid responses; full browser UI reconnect behavior is still not E2E verified | `src/lib/market/bybit.ts`, `src/lib/market/bybit-websocket.ts`, `src/app/api/markets/`, `src/components/orion-app.tsx` |
 | Forex Reference | Daily reference-rate conversion and selected major/cross currencies | Implemented in this branch using Frankfurter v2; reference rates only, not intraday OHLC or broker bid/ask | `src/components/forex-reference-page.tsx`, `src/app/api/forex/rates/route.ts` |
 | SMC Scanner | Daily/4H context and 1H/30M deterministic analysis with profile and saved-history support | Implemented in code; Supabase persistence requires signed-in project verification | `src/lib/smc/`, `src/app/api/smc/`, `src/components/orion-app.tsx` |
 | Chart Analyzer | Lightweight Charts candles and deterministic annotations after a scan | Implemented; no manual annotation editor or independent chart market selector | `src/components/smc-candlestick-chart.tsx`, `src/lib/smc/chart-annotations.ts` |
@@ -33,6 +33,7 @@ All desktop navigation is in the app sidebar. The Android bottom bar is compact;
 | `GET /api/providers` | Safe provider status summaries | Never returns API keys; OpenRouter catalogue check may call upstream |
 | `GET /api/models` | Model list filtered by free pricing and provider | Rejects unsupported provider; paid model availability gated by server config |
 | `GET /api/markets/candles` | Bybit V5 kline history | Validates category, interval, symbol, limit; market service caches and validates data |
+| `GET /api/markets/ticker` | Bybit V5 current ticker and 24-hour change/high/low/volume values | Validates category/symbol and response; short per-symbol cache; does not fabricate fallback prices |
 | `GET /api/markets/symbols` | Bybit V5 instrument search | Validates category/query and caches symbol results |
 | `POST /api/smc/analyze` | Multi-timeframe Bybit SMC scan | Validates category/symbol/timeframe; saves snapshot only with authenticated Supabase access |
 | `GET /api/smc/analyses` | User-owned saved analysis search | Requires Supabase auth and RLS |
@@ -43,7 +44,7 @@ All desktop navigation is in the app sidebar. The Android bottom bar is compact;
 | `GET /api/news` | Official BLS and Federal Reserve RSS/Atom release headlines | Source allowlist and HTTPS links; bounded item/title/summary sizes; partial source outages are surfaced |
 | `POST /api/livekit/token` | Short-lived user/room-scoped LiveKit token | Requires Supabase auth; keeps signing secret server-side |
 
-No route currently handles private screenshot storage, an in-app economic calendar, forex OHLC candles, Bybit WebSockets, or automated order execution. Chart images are transient request data forwarded to the selected OpenRouter vision model and are not written to Supabase.
+No route currently handles private screenshot storage, an in-app economic calendar, forex OHLC candles, or automated order execution. Bybit public WebSockets are consumed directly by the Markets client. Chart images are transient request data forwarded to the selected OpenRouter vision model and are not written to Supabase.
 
 ## Supabase and privacy
 
@@ -53,12 +54,13 @@ Environment configuration uses `.env.example`; `.env.local` is ignored by `.giti
 
 ## Verification evidence
 
-- `npm test`: 55 passing, 0 failing; covers image validation/provider modality, official news-feed parsing/failures, FX, Bybit REST/WebSocket parsing, SMC, journal, and provider behavior.
+- `npm test`: 58 passing, 0 failing; covers image validation/provider modality, official news-feed parsing/failures, FX, Bybit REST/ticker/WebSocket parsing, SMC, journal, and provider behavior.
 - `npm run typecheck`: PASS after final UI/API changes.
 - `npm run build`: PASS; production output includes `/api/news`, `/api/forex/rates`, LiveKit, existing app routes, and PWA manifest.
 - Frankfurter v2 direct upstream request: HTTP 200 with dated USD rates during development; route unit tests cover validation, malformed data, and network/upstream failures.
 - Official news source check: BLS Employment/CPI Atom feeds and Federal Reserve monetary-policy RSS all returned HTTP 200; parsed 39 sourced items total with no unavailable sources. Unit tests cover parsing, safe links, and partial upstream failure.
 - Bybit live WebSocket smoke: connected to the official linear public endpoint, received subscription acknowledgement and one `kline.1.BTCUSDT` candle.
+- Bybit live ticker smoke: the public V5 linear ticker endpoint returned a validated `BTCUSDT` quote and 24-hour change; the app caches each symbol/category for five seconds and shows explicit refresh errors.
 - OpenRouter vision smoke check: the live catalogue confirmed `nvidia/nemotron-3.5-super-vl:free` had zero prompt/completion price and image input while paid access was disabled; a one-pixel PNG request streamed an image description. This verifies the provider/model path, not accuracy on complex user screenshots.
 - `npm audit`: no advisories after pinning PostCSS to patched `8.5.23` (overridden transitively for Next.js). Re-run before merge because advisories change.
 - Existing production URL `https://project-orion-murex.vercel.app/` returned HTTP 200 and rendered Orion in the session browser. This is the current deployed app, not this feature branch.

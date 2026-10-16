@@ -4,7 +4,7 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { Activity, ArrowUpRight, Mic, BarChart3, Bell, BrainCircuit, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Compass, FileText, Globe2, LayoutDashboard, LoaderCircle, Menu, MessageSquare, MoreHorizontal, Plus, Search, Send, Settings2, ShieldCheck, Sparkles, SquarePen, TrendingUp, Trash2, Pencil, X, LogOut, StopCircle, RotateCcw, Image as ImageIcon } from 'lucide-react';
 import type { AuthChangeEvent, Session, User } from '@supabase/supabase-js';
 import { getSupabaseBrowserClient, supabaseBrowserConfiguration } from '@/lib/supabase/client';
-import type { BybitCategory, BybitInterval, Candle, MarketSymbol } from '@/lib/market/bybit';
+import type { BybitCategory, BybitInterval, Candle, MarketSymbol, MarketTicker } from '@/lib/market/bybit';
 import type { SMCAssessment } from '@/lib/smc/engine';
 import type { OHLCV } from '@/lib/smc/engine';
 import { SMCCandlestickChart } from './smc-candlestick-chart';
@@ -106,6 +106,8 @@ export default function OrionApp() {
   const [marketSymbol, setMarketSymbol] = useState('BTCUSDT');
   const [marketInterval, setMarketInterval] = useState<BybitInterval>('60');
   const [marketCandles, setMarketCandles] = useState<Candle[]>([]);
+  const [marketTicker, setMarketTicker] = useState<MarketTicker | null>(null);
+  const [marketTickerError, setMarketTickerError] = useState('');
   const [marketUpdated, setMarketUpdated] = useState('');
   const [marketStale, setMarketStale] = useState(false);
   const [marketBusy, setMarketBusy] = useState(false);
@@ -217,6 +219,22 @@ export default function OrionApp() {
       .finally(() => { if (!cancelled) setMarketBusy(false); });
     return () => { cancelled = true; };
   }, [active, marketCategory, marketSymbol, marketInterval, marketRefreshToken]);
+
+  useEffect(() => {
+    if (active !== 'Markets') return;
+    let cancelled = false;
+    const loadTicker = async () => {
+      try {
+        const response = await fetch(`/api/markets/ticker?category=${marketCategory}&symbol=${encodeURIComponent(marketSymbol)}`, { cache: 'no-store' });
+        const data = await response.json() as MarketTicker & { message?: string };
+        if (!response.ok) throw new Error(data.message || 'Ticker unavailable.');
+        if (!cancelled) { setMarketTicker(data); setMarketTickerError(''); }
+      } catch (error) { if (!cancelled) setMarketTickerError(error instanceof Error ? error.message : 'Ticker unavailable.'); }
+    };
+    void loadTicker();
+    const timer = window.setInterval(() => void loadTicker(), 15_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [active, marketCategory, marketSymbol]);
 
   useEffect(() => {
     if (active !== 'Markets') { setMarketStreamStatus('offline'); return; }
@@ -555,7 +573,7 @@ export default function OrionApp() {
       </div> : active === 'Voice Orion' ? <VoiceAssistantPanel/> : active === 'Forex Reference' ? <ForexReferencePage/> : active === 'Markets' ? <div className="market-page">
         <div className="market-heading"><div><div className="eyebrow"><span className="green-pip"/> BYBIT PUBLIC MARKET DATA</div><h1>Crypto markets</h1><p>Public candle data · no trading credentials</p></div><button className="market-refresh" onClick={() => setMarketRefreshToken((value) => value + 1)} disabled={marketBusy}><RotateCcw size={14}/> Refresh</button></div>
         <div className="market-layout"><section className="market-sidebar"><label className="market-label">MARKET TYPE<select value={marketCategory} onChange={(event) => setMarketCategory(event.target.value as BybitCategory)}><option value="linear">Linear contracts</option><option value="spot">Spot</option><option value="inverse">Inverse contracts</option></select></label><label className="market-label">SEARCH SYMBOLS<input type="search" value={symbolQuery} placeholder="Search BTC, ETH…" onChange={(event) => setSymbolQuery(event.target.value)}/></label><div className="symbol-results"><div className="market-subtitle">{symbolBusy ? 'Searching…' : 'SEARCH RESULTS'}</div>{symbolResults.map((result) => <button key={result.symbol} className="symbol-result" onClick={() => { setMarketSymbol(result.symbol); setWatchlist((items) => items.includes(result.symbol) ? items : [result.symbol, ...items].slice(0, 50)); }}><span><b>{result.symbol}</b><small>{result.baseCoin}{result.quoteCoin ? ` / ${result.quoteCoin}` : ''}</small></span><span>{watchlist.includes(result.symbol) ? '✓' : '+'}</span></button>)}</div><div className="watchlist"><div className="market-subtitle">WATCHLIST · {watchlist.length}</div>{watchlist.map((symbol) => <div key={symbol} className={`watchlist-row ${marketSymbol === symbol ? 'watchlist-active' : ''}`}><button onClick={() => setMarketSymbol(symbol)}>{symbol}</button><button aria-label={`Remove ${symbol} from watchlist`} title="Remove from watchlist" onClick={() => setWatchlist((items) => { const next = items.filter((item) => item !== symbol); if (marketSymbol === symbol && next[0]) setMarketSymbol(next[0]); return next; })}>×</button></div>)}</div></section>
-          <section className="market-data"><div className="market-toolbar"><div className="market-selected"><b>{marketSymbol}</b><span>{marketCategory.toUpperCase()} · Bybit V5</span></div><label className="market-label inline-market-label">TIMEFRAME<select value={marketInterval} onChange={(event) => setMarketInterval(event.target.value as BybitInterval)}>{[['1','1m'],['3','3m'],['5','5m'],['15','15m'],['30','30m'],['60','1H'],['120','2H'],['240','4H'],['360','6H'],['720','12H'],['D','1D'],['W','1W'],['M','1M']].map(([value,label]) => <option value={value} key={value}>{label}</option>)}</select></label></div>
+          <section className="market-data"><div className="market-toolbar"><div className="market-selected"><b>{marketSymbol}</b><span>{marketCategory.toUpperCase()} · Bybit V5</span></div><div className="market-ticker"><strong>{marketTicker ? marketTicker.lastPrice.toLocaleString(undefined, { maximumSignificantDigits: 12 }) : '—'}</strong>{marketTicker?.change24h !== null && marketTicker?.change24h !== undefined && <span className={marketTicker.change24h >= 0 ? 'ticker-positive' : 'ticker-negative'}>{marketTicker.change24h >= 0 ? '+' : ''}{(marketTicker.change24h * 100).toFixed(2)}% · 24h</span>}<small>{marketTicker ? `Bybit ticker · ${new Date(marketTicker.updatedAt).toLocaleTimeString()}` : marketTickerError || 'Loading public ticker…'}</small>{marketTickerError && marketTicker && <small className="ticker-error">Refresh error: {marketTickerError}</small>}</div><label className="market-label inline-market-label">TIMEFRAME<select value={marketInterval} onChange={(event) => setMarketInterval(event.target.value as BybitInterval)}>{[['1','1m'],['3','3m'],['5','5m'],['15','15m'],['30','30m'],['60','1H'],['120','2H'],['240','4H'],['360','6H'],['720','12H'],['D','1D'],['W','1W'],['M','1M']].map(([value,label]) => <option value={value} key={value}>{label}</option>)}</select></label></div>
             <div className={`market-feed-status ${marketStale ? 'market-stale' : ''}`}><span className={marketStale ? 'amber-pip' : 'green-pip'}/>{marketBusy && !marketCandles.length ? 'Loading candles…' : marketError && marketStreamStatus !== 'live' ? 'Feed unavailable' : marketStale ? 'Stale data · inspect timestamps' : marketStreamStatus === 'live' ? 'Realtime Bybit kline stream connected' : marketStreamStatus === 'reconnecting' ? 'Realtime stream reconnecting · REST snapshot shown' : marketStreamStatus === 'connecting' ? 'Connecting to public realtime feed…' : 'REST snapshot loaded'}{marketUpdated && <small>Last successful update {new Date(marketUpdated).toLocaleString()}</small>}</div>
             {marketError && <div className="inline-error market-error" role="alert">{marketError}</div>}
             {marketStale && <div className="market-warning">The latest candle is older than expected for this timeframe. Verify its timestamp before using it.</div>}

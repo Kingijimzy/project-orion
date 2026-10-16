@@ -3,6 +3,7 @@ export type BybitInterval = '1' | '3' | '5' | '15' | '30' | '60' | '120' | '240'
 export type Candle = { startTime: number; open: number; high: number; low: number; close: number; volume: number; turnover: number; closed: boolean };
 export type CandleResult = { category: BybitCategory; symbol: string; interval: BybitInterval; candles: Candle[]; lastUpdated: string; stale: boolean; source: 'Bybit V5 public REST' };
 export type MarketSymbol = { symbol: string; baseCoin: string; quoteCoin: string; category: BybitCategory };
+export type MarketTicker = { category: BybitCategory; symbol: string; lastPrice: number; change24h: number | null; high24h: number | null; low24h: number | null; volume24h: number | null; turnover24h: number | null; updatedAt: string; source: 'Bybit V5 public REST' };
 
 export interface MarketDataService {
   getCandles(category: BybitCategory, symbol: string, interval: BybitInterval, limit?: number): Promise<CandleResult>;
@@ -40,6 +41,11 @@ function finitePositive(value: unknown): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
+function finiteNumber(value: unknown): number | null {
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
 
 export function parseBybitCandles(payload: unknown, interval: BybitInterval, now = Date.now()): { candles: Candle[]; stale: boolean } {
   if (!payload || typeof payload !== 'object') throw new MarketDataError('Bybit returned a malformed candle response.', 502, 'malformed_response');
@@ -75,12 +81,28 @@ export function parseBybitCandles(payload: unknown, interval: BybitInterval, now
 type CacheItem<T> = { expires: number; value: T };
 const candleCache = new Map<string, CacheItem<CandleResult>>();
 const symbolCache = new Map<BybitCategory, CacheItem<MarketSymbol[]>>();
+const tickerCache = new Map<string, CacheItem<MarketTicker>>();
 const CANDLE_CACHE_MS = 15_000;
 const SYMBOL_CACHE_MS = 5 * 60_000;
+const TICKER_CACHE_MS = 5_000;
 const BASE_URL = 'https://api.bybit.com';
 
 export class BybitPublicMarketData implements MarketDataService {
   constructor(private readonly fetcher: typeof fetch = fetch, private readonly clock: () => number = Date.now) {}
+  async getTicker(category: BybitCategory, symbol: string): Promise<MarketTicker> {
+    if (!isBybitCategory(category) || !/^[A-Z0-9]{2,30}$/.test(symbol)) throw new MarketDataError('Choose a valid Bybit market and symbol.', 400, 'invalid_request');
+    const key = `${category}:${symbol}`;
+    const cached = tickerCache.get(key);
+    if (cached && cached.expires > this.clock()) return cached.value;
+    const url = new URL(`${BASE_URL}/v5/market/tickers`);
+    url.search = new URLSearchParams({ category, symbol }).toString();
+    const response = await this.request(url);
+    let payload: unknown;
+    try { payload = await response.json(); } catch { throw new MarketDataError('Bybit returned an unreadable ticker response.', 502, 'malformed_response'); }
+    const ticker = parseBybitTicker(payload, category, symbol, this.clock());
+    tickerCache.set(key, { value: ticker, expires: this.clock() + TICKER_CACHE_MS });
+    return ticker;
+  }
   async getCandles(category: BybitCategory, symbol: string, interval: BybitInterval, limit = 100): Promise<CandleResult> {
     if (!isBybitCategory(category) || !isBybitInterval(interval) || !/^[A-Z0-9]{2,30}$/.test(symbol) || !Number.isInteger(limit) || limit < 1 || limit > 1000) {
       throw new MarketDataError('Choose a valid Bybit market, symbol, timeframe, and candle count.', 400, 'invalid_request');
@@ -142,4 +164,22 @@ export function parseBybitSymbols(payload: unknown, category: BybitCategory): Ma
   });
 }
 
-export function clearBybitCachesForTests() { candleCache.clear(); symbolCache.clear(); }
+export function parseBybitTicker(payload: unknown, category: BybitCategory, symbol: string, now = Date.now()): MarketTicker {
+  if (!payload || typeof payload !== 'object') throw new MarketDataError('Bybit returned a malformed ticker response.', 502, 'malformed_response');
+  const body = payload as { retCode?: unknown; retMsg?: unknown; result?: { list?: unknown } };
+  if (body.retCode !== 0) {
+    if (body.retCode === 10006 || body.retCode === 10429) throw new MarketDataError('Bybit rate limit reached. Wait briefly before refreshing.', 429, 'rate_limited');
+    throw new MarketDataError('Bybit rejected the ticker request.', 502, 'upstream_error');
+  }
+  const rows = body.result?.list;
+  if (!Array.isArray(rows) || rows.length !== 1 || !rows[0] || typeof rows[0] !== 'object') throw new MarketDataError('Bybit returned no ticker for this symbol.', 502, 'empty_response');
+  const row = rows[0] as Record<string, unknown>;
+  const lastPrice = finitePositive(row.lastPrice);
+  if (row.symbol !== symbol || lastPrice === null || lastPrice <= 0) throw new MarketDataError('Bybit returned invalid ticker data.', 502, 'invalid_ticker');
+  const optional = (key: string) => { const value = row[key]; if (value === undefined || value === null || value === '') return null; const parsed = finitePositive(value); return parsed === null ? null : parsed; };
+  const change24h = row.price24hPcnt === undefined || row.price24hPcnt === null || row.price24hPcnt === '' ? null : finiteNumber(row.price24hPcnt);
+  if (row.price24hPcnt !== undefined && row.price24hPcnt !== null && row.price24hPcnt !== '' && change24h === null) throw new MarketDataError('Bybit returned invalid 24-hour ticker change.', 502, 'invalid_ticker');
+  return { category, symbol, lastPrice, change24h, high24h: optional('highPrice24h'), low24h: optional('lowPrice24h'), volume24h: optional('volume24h'), turnover24h: optional('turnover24h'), updatedAt: new Date(now).toISOString(), source: 'Bybit V5 public REST' };
+}
+
+export function clearBybitCachesForTests() { candleCache.clear(); symbolCache.clear(); tickerCache.clear(); }
