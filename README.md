@@ -27,6 +27,8 @@ News & Sessions displays release headlines directly from official BLS Employment
 
 The Market Outlook view combines a requested crypto SMC assessment from Bybit with a separate list of recent official U.S. macro release headlines. It shows supporting/conflicting rules, freshness, invalidation, and confirmation needs. It does not assign news impact, produce probabilities, or cover forex technical candles; upcoming BLS/FOMC dates link to their official calendars.
 
+Markets starts with a validated Bybit V5 REST candle snapshot and subscribes to the matching public kline WebSocket for forming/closed updates, with ping heartbeat and reconnect behavior. The app uses public market data only and cannot place exchange orders.
+
 ## Verification
 
 - `npm test` runs the provider, chat, market-data, SMC, strategy, chart-mapping, calculator, and journal repository tests.

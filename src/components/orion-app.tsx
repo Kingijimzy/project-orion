@@ -16,6 +16,7 @@ import { ForexReferencePage } from './forex-reference-page';
 import { AnalyticsWorkspacePage, HomeWorkspacePage, LessonsWorkspacePage, SettingsWorkspacePage } from './workspace-pages';
 import { NewsWorkspacePage } from './news-workspace-page';
 import { MarketOutlookPage } from './market-outlook-page';
+import { bybitKlineTopic, bybitPublicWebSocketUrl, parseBybitKlineMessage } from '@/lib/market/bybit-websocket';
 
 type ChatMessage = { id?: string; role: 'assistant' | 'user'; text: string; imagePreview?: string; status?: 'loading' | 'error' | 'stopped' };
 type Conversation = { id: string; title: string; provider: ProviderId; model_id: string | null; created_at: string; updated_at: string };
@@ -110,6 +111,7 @@ export default function OrionApp() {
   const [marketBusy, setMarketBusy] = useState(false);
   const [marketRefreshToken, setMarketRefreshToken] = useState(0);
   const [marketError, setMarketError] = useState('');
+  const [marketStreamStatus, setMarketStreamStatus] = useState<'offline' | 'connecting' | 'live' | 'reconnecting'>('offline');
   const [symbolQuery, setSymbolQuery] = useState('');
   const [symbolResults, setSymbolResults] = useState<MarketSymbol[]>([]);
   const [symbolBusy, setSymbolBusy] = useState(false);
@@ -215,6 +217,63 @@ export default function OrionApp() {
       .finally(() => { if (!cancelled) setMarketBusy(false); });
     return () => { cancelled = true; };
   }, [active, marketCategory, marketSymbol, marketInterval, marketRefreshToken]);
+
+  useEffect(() => {
+    if (active !== 'Markets') { setMarketStreamStatus('offline'); return; }
+    let running = true;
+    let socket: WebSocket | null = null;
+    let retryTimer = 0;
+    let heartbeatTimer = 0;
+    let freshnessTimer = 0;
+    let delay = 1000;
+    const topic = bybitKlineTopic(marketInterval, marketSymbol);
+    const connect = () => {
+      if (!running) return;
+      setMarketStreamStatus(delay === 1000 ? 'connecting' : 'reconnecting');
+      try { socket = new WebSocket(bybitPublicWebSocketUrl(marketCategory)); }
+      catch { scheduleReconnect(); return; }
+      socket.onopen = () => {
+        if (!running || !socket) return;
+        setMarketStreamStatus('live');
+        socket.send(JSON.stringify({ op: 'subscribe', args: [topic] }));
+        heartbeatTimer = window.setInterval(() => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ op: 'ping' })); }, 20_000);
+      };
+      socket.onmessage = (event) => {
+        try {
+          const frame = JSON.parse(String(event.data)) as { op?: string; success?: boolean; ret_msg?: string; topic?: string; data?: unknown };
+          if (frame.op === 'subscribe' && frame.success === false) { socket?.close(); return; }
+          const candle = parseBybitKlineMessage(frame, topic);
+          if (!candle) return;
+          delay = 1000;
+          window.clearTimeout(freshnessTimer);
+          setMarketCandles((current) => {
+            const index = current.findIndex((item) => item.startTime === candle.startTime);
+            const next = index >= 0 ? current.map((item, itemIndex) => itemIndex === index ? candle : item) : [...current, candle];
+            return next.sort((a, b) => a.startTime - b.startTime).slice(-120);
+          });
+          setMarketUpdated(new Date().toISOString()); setMarketStale(false); setMarketError('');
+          const freshnessMs = marketInterval === 'D' ? 2 * 86_400_000 : marketInterval === 'W' ? 14 * 86_400_000 : marketInterval === 'M' ? 62 * 86_400_000 : Math.max(Number(marketInterval) * 180_000, 60_000);
+          freshnessTimer = window.setTimeout(() => setMarketStale(true), freshnessMs);
+        } catch { /* ignore malformed or control frames; REST candles remain displayed */ }
+      };
+      socket.onerror = () => socket?.close();
+      socket.onclose = () => {
+        window.clearInterval(heartbeatTimer);
+        if (running) scheduleReconnect();
+      };
+    };
+    const scheduleReconnect = () => {
+      if (!running) return;
+      setMarketStreamStatus('reconnecting'); window.clearInterval(heartbeatTimer);
+      retryTimer = window.setTimeout(connect, delay);
+      delay = Math.min(delay * 2, 30_000);
+    };
+    connect();
+    return () => {
+      running = false; window.clearTimeout(retryTimer); window.clearTimeout(freshnessTimer); window.clearInterval(heartbeatTimer);
+      socket?.close();
+    };
+  }, [active, marketCategory, marketSymbol, marketInterval]);
 
   useEffect(() => {
     if (active !== 'Markets') return;
@@ -497,7 +556,7 @@ export default function OrionApp() {
         <div className="market-heading"><div><div className="eyebrow"><span className="green-pip"/> BYBIT PUBLIC MARKET DATA</div><h1>Crypto markets</h1><p>Public candle data · no trading credentials</p></div><button className="market-refresh" onClick={() => setMarketRefreshToken((value) => value + 1)} disabled={marketBusy}><RotateCcw size={14}/> Refresh</button></div>
         <div className="market-layout"><section className="market-sidebar"><label className="market-label">MARKET TYPE<select value={marketCategory} onChange={(event) => setMarketCategory(event.target.value as BybitCategory)}><option value="linear">Linear contracts</option><option value="spot">Spot</option><option value="inverse">Inverse contracts</option></select></label><label className="market-label">SEARCH SYMBOLS<input type="search" value={symbolQuery} placeholder="Search BTC, ETH…" onChange={(event) => setSymbolQuery(event.target.value)}/></label><div className="symbol-results"><div className="market-subtitle">{symbolBusy ? 'Searching…' : 'SEARCH RESULTS'}</div>{symbolResults.map((result) => <button key={result.symbol} className="symbol-result" onClick={() => { setMarketSymbol(result.symbol); setWatchlist((items) => items.includes(result.symbol) ? items : [result.symbol, ...items].slice(0, 50)); }}><span><b>{result.symbol}</b><small>{result.baseCoin}{result.quoteCoin ? ` / ${result.quoteCoin}` : ''}</small></span><span>{watchlist.includes(result.symbol) ? '✓' : '+'}</span></button>)}</div><div className="watchlist"><div className="market-subtitle">WATCHLIST · {watchlist.length}</div>{watchlist.map((symbol) => <div key={symbol} className={`watchlist-row ${marketSymbol === symbol ? 'watchlist-active' : ''}`}><button onClick={() => setMarketSymbol(symbol)}>{symbol}</button><button aria-label={`Remove ${symbol} from watchlist`} title="Remove from watchlist" onClick={() => setWatchlist((items) => { const next = items.filter((item) => item !== symbol); if (marketSymbol === symbol && next[0]) setMarketSymbol(next[0]); return next; })}>×</button></div>)}</div></section>
           <section className="market-data"><div className="market-toolbar"><div className="market-selected"><b>{marketSymbol}</b><span>{marketCategory.toUpperCase()} · Bybit V5</span></div><label className="market-label inline-market-label">TIMEFRAME<select value={marketInterval} onChange={(event) => setMarketInterval(event.target.value as BybitInterval)}>{[['1','1m'],['3','3m'],['5','5m'],['15','15m'],['30','30m'],['60','1H'],['120','2H'],['240','4H'],['360','6H'],['720','12H'],['D','1D'],['W','1W'],['M','1M']].map(([value,label]) => <option value={value} key={value}>{label}</option>)}</select></label></div>
-            <div className={`market-feed-status ${marketStale ? 'market-stale' : ''}`}><span className={marketStale ? 'amber-pip' : 'green-pip'}/>{marketBusy ? 'Loading candles…' : marketError ? 'Feed unavailable' : marketStale ? 'Stale data · inspect timestamps' : 'Public feed connected'}{marketUpdated && <small>Last successful update {new Date(marketUpdated).toLocaleString()}</small>}</div>
+            <div className={`market-feed-status ${marketStale ? 'market-stale' : ''}`}><span className={marketStale ? 'amber-pip' : 'green-pip'}/>{marketBusy && !marketCandles.length ? 'Loading candles…' : marketError && marketStreamStatus !== 'live' ? 'Feed unavailable' : marketStale ? 'Stale data · inspect timestamps' : marketStreamStatus === 'live' ? 'Realtime Bybit kline stream connected' : marketStreamStatus === 'reconnecting' ? 'Realtime stream reconnecting · REST snapshot shown' : marketStreamStatus === 'connecting' ? 'Connecting to public realtime feed…' : 'REST snapshot loaded'}{marketUpdated && <small>Last successful update {new Date(marketUpdated).toLocaleString()}</small>}</div>
             {marketError && <div className="inline-error market-error" role="alert">{marketError}</div>}
             {marketStale && <div className="market-warning">The latest candle is older than expected for this timeframe. Verify its timestamp before using it.</div>}
             <div className="candle-table-wrap"><table className="candle-table"><thead><tr><th>Timestamp (local)</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Volume</th><th>State</th></tr></thead><tbody>{marketCandles.slice().reverse().map((candle) => <tr key={candle.startTime}><td>{new Date(candle.startTime).toLocaleString()}</td><td>{candle.open}</td><td>{candle.high}</td><td>{candle.low}</td><td>{candle.close}</td><td>{candle.volume}</td><td><span className={candle.closed ? 'candle-closed' : 'candle-open'}>{candle.closed ? 'Closed' : 'Forming'}</span></td></tr>)}</tbody></table>{!marketBusy && !marketError && marketCandles.length === 0 && <div className="market-empty">No candles to show.</div>}</div>
