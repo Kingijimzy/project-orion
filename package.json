@@ -16,7 +16,11 @@
     "lucide-react": "^0.468.0",
     "next": "^15.1.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "@livekit/components-react": "^2.9.14",
+    "@livekit/components-styles": "^1.1.6",
+    "livekit-client": "^2.15.6",
+    "livekit-server-sdk": "^2.13.3"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

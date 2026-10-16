@@ -1,0 +1,12 @@
+[project]
+name = "orion-livekit-agent"
+version = "0.1.0"
+description = "LiveKit realtime voice agent for Project Orion"
+requires-python = ">=3.10"
+dependencies = [
+  "livekit-agents[openai]>=1.2.0",
+  "python-dotenv>=1.0.1",
+]
+
+[tool.setuptools]
+py-modules = ["agent"]

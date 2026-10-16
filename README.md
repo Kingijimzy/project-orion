@@ -52,3 +52,27 @@ OpenRouter catalogue verification on 2026-10-13: the configured key loaded the c
 The SMC Scanner and Market Analysis pages use the pure engine in `src/lib/smc/engine.ts`; `/api/smc/analyze` obtains Daily, 4H, 1H, and 30M candles through `MarketDataService`. The chat composer can opt into the same server-side tool for the selected provider. Chat receives a compact structured result while a separate deterministic card displays the engine's calculated levels. Model text does not replace that card. Rules, defaults, confirmation delays, state qualification, and limitations are documented in [`docs/smc-engine.md`](docs/smc-engine.md).
 
 Phase 5 endpoints and migration compile and are covered by mocked/pure tests only. No Supabase account credentials are configured in this workspace, so live database migration, RLS behavior, profile persistence, analysis history, and journal persistence have not been verified against a live project. Existing live verification for Bybit public REST and the mock-only provider status are described above.
+
+
+## LiveKit real-time voice (free-to-test)
+
+Orion includes a **Voice Orion** workspace backed by LiveKit. The web app requests a short-lived, room-scoped token from `/api/livekit/token`; the endpoint requires an authenticated Supabase user and keeps the LiveKit API secret on the server. The browser receives only the temporary room token. The token endpoint returns HTTP 503 until the server-side LiveKit variables are configured.
+
+### Configure the web app
+
+Set these variables in the deployment environment (for example, Vercel Project Settings → Environment Variables), then redeploy:
+
+- `LIVEKIT_URL`: the LiveKit Cloud WebSocket URL, such as `wss://your-project.livekit.cloud`
+- `LIVEKIT_API_KEY`
+- `LIVEKIT_API_SECRET`
+- `LIVEKIT_AGENT_NAME=orion-voice-agent` (optional)
+
+Never put `LIVEKIT_API_SECRET` in a `NEXT_PUBLIC_*` variable, browser code, screenshots, or committed files.
+
+### Run the voice agent
+
+See [voice-agent/README.md](voice-agent/README.md). The agent is a separate Python process and must be running against the same LiveKit project. LiveKit documents a limited free Build plan with monthly inference credits; voice-model usage is not unlimited. Check current plan limits before longer sessions. The first agent uses LiveKit Inference for real-time speech and does not need a separate OpenAI API key.
+
+### Current scope and safety
+
+The first voice release provides a real-time spoken assistant. It is **not yet connected to Bybit candles or the deterministic SMC tool**. The agent explicitly must not invent live prices, price levels, or news and does not place trades. The UI, token endpoint, and agent source are committed on the feature branch, but this repository connector cannot run `npm install`, `npm test`, `npm run typecheck`, `npm run build`, or a live microphone/room session. Those checks must be performed after installing dependencies and configuring LiveKit.
