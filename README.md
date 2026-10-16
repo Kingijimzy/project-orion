@@ -19,7 +19,7 @@ Conversations and messages are owned by the authenticated Supabase `auth.users` 
 
 ## Phase 5 tools
 
-The Chart Analyzer renders Bybit candles and deterministic SMC annotations with Lightweight Charts. It is Apache-2.0 licensed and the required attribution logo is enabled. The Strategy Settings page supports named, versioned profiles; each saved analysis records a reproducible candle snapshot, settings/version, engine version, freshness, and results. The Trading Journal and profile/history APIs require a signed-in Supabase user and the migration above. Forex calculations are standalone formulas and do not imply a live forex quote feed. Screenshot references are stored as URLs/text; Supabase Storage upload is not configured. AI reviews are appended separately after they are generated in chat and pasted into the journal review form; the app does not invent review text.
+The Chart Analyzer renders Bybit candles and deterministic SMC annotations with Lightweight Charts. It is Apache-2.0 licensed and the required attribution logo is enabled. The Strategy Settings page supports named, versioned profiles; each saved analysis records a reproducible candle snapshot, settings/version, engine version, freshness, and results. The Trading Journal and profile/history APIs require a signed-in Supabase user and the migration above. Forex calculators are included, and the feature branch adds a separate Frankfurter daily reference-rate screen; this is not live forex data or intraday OHLC. Screenshot references are stored as URLs/text; private image upload/storage is not configured. AI reviews are appended separately after they are generated in chat and pasted into the journal review form; the app does not invent review text.
 
 The Trading Tools page separates linear crypto quantity/notional assumptions from forex pip formulas and shows cost assumptions. Outcome statistics remain hidden until at least 10 closed journal trades are available. They do not establish setup quality or future profitability.
 
@@ -75,4 +75,10 @@ See [voice-agent/README.md](voice-agent/README.md). The agent is a separate Pyth
 
 ### Current scope and safety
 
-The first voice release provides a real-time spoken assistant. It is **not yet connected to Bybit candles or the deterministic SMC tool**. The agent explicitly must not invent live prices, price levels, or news and does not place trades. The UI, token endpoint, and agent source are committed on the feature branch, but this repository connector cannot run `npm install`, `npm test`, `npm run typecheck`, `npm run build`, or a live microphone/room session. Those checks must be performed after installing dependencies and configuring LiveKit.
+Voice Orion currently has a LiveKit room UI, authenticated short-lived room-token endpoint, and separate Python agent source. The agent is **not connected to Bybit candles or the deterministic SMC tool**. It must not invent live prices, price levels, or news and does not place trades. The feature branch's npm tests, typecheck, and production build pass, but the LiveKit credentials, worker startup, microphone permissions, room join, and speech response have not been tested end to end. Do not treat voice as available until those live checks pass.
+
+## Forex reference data
+
+The feature branch adds a separate FX reference-rate endpoint and converter. It uses Frankfurter's free public API without an API key and labels observations as daily reference data. Values are not broker bid/ask quotes, intraday OHLC candles, or executable prices. The provider documents daily updates and rate limiting without fixed daily or monthly caps; availability and publication time depend on its upstream providers. See [Frankfurter API documentation](https://frankfurter.dev/) and [license/data notes](https://frankfurter.dev/license/).
+
+News, scheduled economic events, forex intraday candles, and a news-driven market outlook are not yet implemented. The News & Sessions navigation entry must not be mistaken for a connected feed.

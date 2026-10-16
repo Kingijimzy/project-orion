@@ -18,6 +18,7 @@ export function VoiceAssistantPanel() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [connected, setConnected] = useState(false);
 
   async function startSession() {
     setBusy(true); setError(''); setNotice('');
@@ -26,6 +27,7 @@ export function VoiceAssistantPanel() {
       if (!response.ok) throw new Error(await getError(response));
       const data = await response.json() as VoiceSession;
       if (!data.token || !data.serverUrl || !data.roomName) throw new Error('LiveKit returned an incomplete session.');
+      setConnected(false);
       setSession(data);
       setNotice('Connecting securely. The voice agent must also be running in LiveKit.');
     } catch (cause) {
@@ -39,11 +41,14 @@ export function VoiceAssistantPanel() {
     </header>
     <section className="voice-card">
       <div className="voice-orb"><div className="voice-orb-inner"><Radio size={30}/></div></div>
-      <div className="voice-state">{session ? 'Voice room connected' : 'Ready when you are'}</div>
-      <p className="voice-description">{session ? 'Allow microphone access if prompted. If the agent is online, Orion should greet you and listen for your question.' : 'Start a private voice room. Your browser will ask for microphone permission when the session begins.'}</p>
+      <div className="voice-state">{session ? connected ? 'Connected to voice room' : 'Connecting to voice room…' : 'Ready when you are'}</div>
+      <p className="voice-description">{session ? `Allow microphone access if prompted. The ${session.agentName} worker must be running for spoken replies.` : 'Start a private voice room. Your browser will ask for microphone permission when the session begins.'}</p>
       {!session ? <button className="voice-primary" onClick={() => void startSession()} disabled={busy}>{busy ? <><LoaderCircle size={16} className="spin"/> Preparing voice session…</> : <><Mic size={16}/> Start talking</>}</button> :
-        <LiveKitRoom token={session.token} serverUrl={session.serverUrl} connect audio video={false} onDisconnected={() => { setSession(null); setNotice('Voice session ended.'); }}>
-          <div className="voice-live-status"><span className="green-pip"/> Connected to LiveKit room</div>
+        <LiveKitRoom token={session.token} serverUrl={session.serverUrl} connect audio video={false}
+          onConnected={() => { setConnected(true); setError(''); setNotice(`Connected to LiveKit. Waiting for ${session.agentName} to join.`); }}
+          onError={(cause) => { setConnected(false); setError(`Could not connect to LiveKit: ${cause.message}`); setSession(null); }}
+          onDisconnected={() => { setConnected(false); setSession(null); setNotice('Voice session ended.'); }}>
+          <div className="voice-live-status"><span className="green-pip"/> {connected ? `Connected · waiting for ${session.agentName}` : 'Joining LiveKit room…'}</div>
           <RoomAudioRenderer/>
           <StartAudio label="Enable Orion audio"/>
           <ControlBar controls={{ microphone: true, camera: false, screenShare: false, chat: false, leave: true }} />
@@ -51,6 +56,7 @@ export function VoiceAssistantPanel() {
         </LiveKitRoom>}
       {notice && <div className="voice-notice"><ShieldCheck size={14}/><span>{notice}</span></div>}
       {error && <div className="voice-error" role="alert"><AlertTriangle size={14}/><span>{error}</span></div>}
+      {error && !session && <button className="voice-secondary" onClick={() => void startSession()} disabled={busy}>{busy ? 'Retrying…' : 'Retry connection'}</button>}
     </section>
     <section className="voice-card voice-setup">
       <h2>Free-to-test setup</h2>

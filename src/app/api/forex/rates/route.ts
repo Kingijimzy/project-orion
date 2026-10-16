@@ -4,19 +4,13 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 // Frankfurter publishes daily reference exchange rates, not executable/intraday FX quotes.
-// Keep this endpoint explicit about the source and observation date so the UI cannot
-// accidentally present these values as live broker prices.
-const BASE_URL = 'https://api.frankfurter.dev/v1/latest';
+// Use the current v2 API and label the values so the UI cannot present them as live prices.
+const BASE_URL = 'https://api.frankfurter.dev/v2/rates';
 const CURRENCY_CODE = /^[A-Z]{3}$/;
 const DEFAULT_BASE = 'USD';
 const DEFAULT_SYMBOLS = ['EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD'];
 
-type FrankfurterPayload = {
-  amount?: number;
-  base?: string;
-  date?: string;
-  rates?: Record<string, number>;
-};
+type FrankfurterRow = { date?: string; base?: string; quote?: string; rate?: number };
 
 export async function GET(request: Request) {
   const params = new URL(request.url).searchParams;
@@ -52,7 +46,7 @@ export async function GET(request: Request) {
 
   const url = new URL(BASE_URL);
   url.searchParams.set('base', base);
-  url.searchParams.set('symbols', uniqueSymbols.join(','));
+  url.searchParams.set('quotes', uniqueSymbols.join(','));
 
   let response: Response;
   try {
@@ -75,9 +69,9 @@ export async function GET(request: Request) {
     );
   }
 
-  let payload: FrankfurterPayload;
+  let payload: FrankfurterRow[];
   try {
-    payload = (await response.json()) as FrankfurterPayload;
+    payload = (await response.json()) as FrankfurterRow[];
   } catch {
     return NextResponse.json(
       { error: 'invalid_upstream_response', message: 'FX reference provider returned unreadable data.' },
@@ -85,13 +79,7 @@ export async function GET(request: Request) {
     );
   }
 
-  if (
-    payload.base !== base ||
-    typeof payload.date !== 'string' ||
-    !/^\d{4}-\d{2}-\d{2}$/.test(payload.date) ||
-    !payload.rates ||
-    typeof payload.rates !== 'object'
-  ) {
+  if (!Array.isArray(payload)) {
     return NextResponse.json(
       { error: 'invalid_upstream_response', message: 'FX reference provider returned incomplete data.' },
       { status: 502 },
@@ -99,19 +87,30 @@ export async function GET(request: Request) {
   }
 
   const rates: Record<string, number> = {};
-  for (const code of uniqueSymbols) {
-    const rate = payload.rates[code];
-    if (typeof rate === 'number' && Number.isFinite(rate) && rate > 0) {
-      rates[code] = rate;
-    }
+  const dates: string[] = [];
+  for (const row of payload) {
+    if (!row || row.base !== base || typeof row.quote !== 'string' || !uniqueSymbols.includes(row.quote)) continue;
+    if (typeof row.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(row.date)) continue;
+    if (typeof row.rate !== 'number' || !Number.isFinite(row.rate) || row.rate <= 0) continue;
+    rates[row.quote] = row.rate;
+    dates.push(row.date);
   }
+
+  if (payload.length > 0 && Object.keys(rates).length === 0) {
+    return NextResponse.json(
+      { error: 'invalid_upstream_response', message: 'FX reference provider returned no valid rates.' },
+      { status: 502 },
+    );
+  }
+
+  const observationDate = dates.sort().at(-1);
 
   return NextResponse.json(
     {
       source: 'Frankfurter daily reference rates',
       kind: 'daily_reference_not_intraday',
       base,
-      date: payload.date,
+      date: observationDate || null,
       rates,
       missing: uniqueSymbols.filter((code) => rates[code] === undefined),
       fetchedAt: new Date().toISOString(),
