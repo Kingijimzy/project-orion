@@ -36,13 +36,14 @@ function smcProviderContext(result: NonNullable<Awaited<ReturnType<typeof analyz
 }
 
 export async function POST(request: Request) {
-  const parsedBody = await readLimitedJson(request);
+  const imageRequest = request.headers.get('x-orion-image') === 'true';
+  const parsedBody = await readLimitedJson(request, imageRequest ? 4.5 * 1024 * 1024 : 32 * 1024);
   if (!parsedBody.ok) return parsedBody.reason === 'too_large'
-    ? jsonError(413, 'request_too_large', 'This request is too large. Keep messages under 12,000 characters.')
+    ? jsonError(413, 'request_too_large', imageRequest ? 'The chart image request is too large. Images must be 3 MB or smaller.' : 'This request is too large. Keep messages under 12,000 characters.')
     : jsonError(400, 'invalid_request', 'Send a valid JSON request.');
   const body = parsedBody.value;
   const input = validateChatRequest(body);
-  if (!input) return jsonError(400, 'invalid_request', 'A conversation ID, non-empty message (up to 12,000 characters), supported provider/model, and valid assistant mode are required.');
+  if (!input) return jsonError(400, 'invalid_request', 'A conversation ID, non-empty message (up to 12,000 characters), supported provider/model, and valid assistant mode are required. Attach only a valid PNG, JPEG, or WebP image up to 3 MB, and use OpenRouter.');
   if (!supabaseConfiguration()) return jsonError(503, 'supabase_not_configured', 'Configure NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY and apply the Supabase migration before using private chat.');
 
   const supabase = await createSupabaseServerClient();
@@ -51,7 +52,7 @@ export async function POST(request: Request) {
   if (authError || !user) return jsonError(401, 'authentication_required', 'Sign in before sending a message.');
 
   let provider;
-  try { provider = await createProvider(input.provider, input.model); }
+  try { provider = await createProvider(input.provider, input.model, process.env, { requireImageInput: Boolean(input.image) }); }
   catch (error) {
     if (error instanceof ProviderError) return jsonError(503, error.code, error.message);
     return jsonError(503, 'provider_not_configured', 'The selected provider is not configured.');
@@ -88,6 +89,20 @@ export async function POST(request: Request) {
   if (smcResult) {
     const lastUserIndex = history.map((message) => message.role).lastIndexOf('user');
     if (lastUserIndex >= 0) history[lastUserIndex] = { ...history[lastUserIndex], content: `${history[lastUserIndex].content}\n\n[Verified deterministic SMC tool result from Bybit V5. Treat every calculated price level and state below as fixed engine output: do not alter, recalculate, or replace levels. Explain the rule evidence and call out missing confirmations. If data quality is invalid or stale, say no reliable setup conclusion can be made.]\n${JSON.stringify(smcProviderContext(smcResult))}` };
+  }
+  if (input.image) {
+    const lastUserIndex = history.map((message) => message.role).lastIndexOf('user');
+    if (lastUserIndex >= 0) {
+      const last = history[lastUserIndex];
+      const text = typeof last.content === 'string' ? last.content : last.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
+      history[lastUserIndex] = {
+        ...last,
+        content: [
+          { type: 'text', text },
+          { type: 'image_url', image_url: { url: `data:${input.image.mimeType};base64,${input.image.base64}` } },
+        ],
+      };
+    }
   }
   const controller = new AbortController();
   const abortFromRequest = () => controller.abort();

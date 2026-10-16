@@ -29,6 +29,16 @@ test('chat SMC tool request accepts constrained market inputs and rejects malfor
   assert.equal(validateChatRequest({ ...valid, smcRequest: { symbol: 'BTCUSDT', category: 'linear', timeframe: '5' } }), null);
 });
 
+test('chat accepts only bounded PNG, JPEG, and WebP image data for OpenRouter', () => {
+  const png = 'data:image/png;base64,iVBORw0KGgo=';
+  assert.equal(validateChatRequest({ ...valid, provider: 'openrouter', model: 'vision/model:free', imageDataUrl: png })?.image?.mimeType, 'image/png');
+  assert.equal(validateChatRequest({ ...valid, provider: 'gemini', imageDataUrl: png }), null);
+  assert.equal(validateChatRequest({ ...valid, provider: 'openrouter', imageDataUrl: 'data:image/svg+xml;base64,PHN2Zz4=' }), null);
+  assert.equal(validateChatRequest({ ...valid, provider: 'openrouter', imageDataUrl: 'data:image/jpeg;base64,iVBORw0KGgo=' }), null);
+  const oversized = Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), Buffer.alloc(3 * 1024 * 1024)]).toString('base64');
+  assert.equal(validateChatRequest({ ...valid, provider: 'openrouter', imageDataUrl: `data:image/png;base64,${oversized}` }), null);
+});
+
 test('conversation title bounds are enforced', () => {
   assert.equal(validateConversationTitle('  My chart review '), 'My chart review');
   assert.equal(validateConversationTitle(''), null);

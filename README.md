@@ -23,6 +23,8 @@ The Chart Analyzer renders Bybit candles and deterministic SMC annotations with 
 
 The Trading Tools page separates linear crypto quantity/notional assumptions from forex pip formulas and shows cost assumptions. Outcome statistics remain hidden until at least 10 closed journal trades are available. They do not establish setup quality or future profitability.
 
+News & Sessions displays release headlines directly from official BLS Employment Situation/CPI feeds and the Federal Reserve monetary policy feed. It links to the BLS annual schedule; the app does not yet ingest an in-app calendar or provide consensus forecasts, impact scores, or actual/previous event comparisons. Chart screenshot attachments are currently transient: PNG, JPEG, or WebP up to 3 MB can be sent only to a catalogue-listed OpenRouter model advertising image input. Orion does not save screenshot bytes to Supabase; the image is transmitted to OpenRouter for inference and their provider retention terms apply. Gemini image analysis and private screenshot storage are not implemented.
+
 ## Verification
 
 - `npm test` runs the provider, chat, market-data, SMC, strategy, chart-mapping, calculator, and journal repository tests.

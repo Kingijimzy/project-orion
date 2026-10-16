@@ -7,13 +7,14 @@ const catalog = { data: [
   { id: 'free/text-model', name: 'Free Text', architecture: { input_modalities: ['text'], output_modalities: ['text'] }, pricing: { prompt: '0', completion: '0', request: '0' }, context_length: 8000 },
   { id: 'paid/text-model', name: 'Paid Text', architecture: { input_modalities: ['text'], output_modalities: ['text'] }, pricing: { prompt: '0.000001', completion: '0.000002', request: '0' } },
   { id: 'unknown/text-model', name: 'Unknown Pricing', architecture: { input_modalities: ['text'], output_modalities: ['text'] }, pricing: { prompt: '0', completion: '0' } },
+  { id: 'free/vision-model', name: 'Free Vision', architecture: { input_modalities: ['text', 'image'], output_modalities: ['text'] }, pricing: { prompt: '0', completion: '0', request: '0' } },
   { id: 'image/only', name: 'Image only', architecture: { input_modalities: ['image'], output_modalities: ['image'] }, pricing: { prompt: '0', completion: '0', request: '0' } },
 ] };
 const env = { OPENROUTER_API_KEY: 'private-key', OPENROUTER_ALLOW_PAID_MODEL: 'false' } as unknown as NodeJS.ProcessEnv;
 
 test('OpenRouter model parser identifies free models only with complete zero pricing metadata', () => {
   const models = parseOpenRouterModels(catalog);
-  assert.deepEqual(models.map((model) => [model.id, model.free]), [['free/text-model', true], ['paid/text-model', false], ['unknown/text-model', null]]);
+  assert.deepEqual(models.map((model) => [model.id, model.free]), [['free/text-model', true], ['paid/text-model', false], ['unknown/text-model', null], ['free/vision-model', true]]);
   assert.throws(() => parseOpenRouterModels({ data: 'bad' }), /malformed model catalogue/);
 });
 
@@ -48,6 +49,26 @@ test('provider selection creates only configured Gemini and OpenRouter adapters'
   const openRouter = new OpenRouterProvider('secret', 'free/text-model', async () => Response.json({ choices: [{ delta: { content: 'ok' } }] }));
   assert.equal(openRouter.id, 'openrouter');
   await assert.rejects(createProvider('openrouter', 'unlisted/model', openrouterEnv), /OpenRouter/);
+  await assert.rejects(createProvider('openrouter', 'free/text-model', openrouterEnv, { requireImageInput: true }), (error: unknown) => error instanceof ProviderError && error.code === 'image_model_unavailable');
+  assert.equal((await createProvider('openrouter', 'free/vision-model', openrouterEnv, { requireImageInput: true })).id, 'openrouter');
+});
+
+test('OpenRouter sends image data as a multimodal user message while streaming text', async () => {
+  let sentBody: { messages: Array<{ role: string; content: unknown }> } | undefined;
+  const provider = new OpenRouterProvider('server-key', 'free/vision-model', async (_input, init) => {
+    sentBody = JSON.parse(String(init?.body));
+    return new Response('data: {"choices":[{"delta":{"content":"Chart read"}}]}\n\ndata: [DONE]\n\n', { status: 200 });
+  });
+  const chunks: string[] = [];
+  for await (const chunk of provider.stream([{ role: 'user', content: [
+    { type: 'text', text: 'Analyze this chart.' },
+    { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' } },
+  ] }], 'chart-analysis', new AbortController().signal)) chunks.push(chunk);
+  assert.deepEqual(chunks, ['Chart read']);
+  assert.deepEqual(sentBody?.messages.at(-1)?.content, [
+    { type: 'text', text: 'Analyze this chart.' },
+    { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' } },
+  ]);
 });
 
 test('OpenRouter streams chat-completion deltas and maps rate-limit errors', async () => {
