@@ -25,6 +25,8 @@ The Trading Tools page separates linear crypto quantity/notional assumptions fro
 
 News & Sessions displays release headlines directly from official BLS Employment Situation/CPI feeds and the Federal Reserve monetary policy feed. It links to the BLS annual schedule; the app does not yet ingest an in-app calendar or provide consensus forecasts, impact scores, or actual/previous event comparisons. Chart screenshot attachments are currently transient: PNG, JPEG, or WebP up to 3 MB can be sent only to a catalogue-listed OpenRouter model advertising image input. Orion does not save screenshot bytes to Supabase; the image is transmitted to OpenRouter for inference and their provider retention terms apply. Gemini image analysis and private screenshot storage are not implemented.
 
+The Market Outlook view combines a requested crypto SMC assessment from Bybit with a separate list of recent official U.S. macro release headlines. It shows supporting/conflicting rules, freshness, invalidation, and confirmation needs. It does not assign news impact, produce probabilities, or cover forex technical candles; upcoming BLS/FOMC dates link to their official calendars.
+
 ## Verification
 
 - `npm test` runs the provider, chat, market-data, SMC, strategy, chart-mapping, calculator, and journal repository tests.
