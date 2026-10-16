@@ -2,7 +2,7 @@ import { it } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_STRATEGY_PROFILE, validateStrategySettings, describeStrategySettings, settingsToEngineOptions } from '../src/lib/smc/strategy-profile';
 import { analyzeTimeframe } from '../src/lib/smc/engine';
-import { mapSMCAnnotations } from '../src/lib/smc/chart-annotations';
+import { filterChartAnnotations, mapSMCAnnotations } from '../src/lib/smc/chart-annotations';
 import { breakEvenPrice, cryptoNotional, cryptoQuantity, estimatedTradingCosts, forexPipDistance, forexPipValue, positionSize, rewardRisk, riskAmount, riskPercent, tradeExpectancyR } from '../src/lib/trading/calculators';
 import { validateJournalEntry } from '../src/lib/journal/validation';
 import { persistJournalEntry, type JournalRepository } from '../src/lib/journal/repository';
@@ -47,6 +47,8 @@ it('maps displayed chart annotations directly to the deterministic finding level
   const annotations=mapSMCAnnotations({symbol:'BTCUSDT',analysisTimestamp:now+30*60_000,timeframe:'60',state:'Watch',higherTimeframeBias:'neutral',dailyBias:'neutral',fourHourBias:'neutral',lowerTimeframeStructure:assessment.structure,structure:assessment,higherTimeframes:{daily:assessment,fourHour:assessment},alignedCandles:[],relevantLiquidity:assessment.liquidityPools.filter(x=>x.equal),fvgs:assessment.fvgs,orderBlocks:assessment.orderBlocks,supportingEvidence:[],conflictingEvidence:[],requiredConfirmation:[],invalidationConditions:[],dataQuality:{valid:true,stale:false,issues:[]},qualificationRule:'test'});
   const swing=assessment.swings[0];
   if(swing){const mapped=annotations.find(a=>a.id===`swing-${swing.kind}-${swing.timestamp}`);assert.equal(mapped?.price,swing.price);assert.ok(mapped?.evidenceTimestamps.includes(swing.confirmedAt));}
+  assert.deepEqual(filterChartAnnotations(annotations,{structure:false,sweeps:false,liquidity:false,fvgs:false,orderBlocks:false}),[]);
+  assert.ok(filterChartAnnotations(annotations,{structure:true,sweeps:false,liquidity:false,fvgs:false,orderBlocks:false}).every(a=>a.kind==='swing'||a.kind==='break'));
 });
 
 it('calculates risk, sizing, targets, FX pips, crypto notional, break-even, costs, and expectancy',()=>{

@@ -1,5 +1,15 @@
 import type { SMCAssessment } from './engine';
 export type ChartAnnotation = { id: string; kind: 'swing'|'break'|'sweep'|'liquidity'|'fvg'|'order-block'; time: number; price?: number; lower?: number; upper?: number; confirmed: boolean; label: string; status: string; evidenceTimestamps: number[]; rule: string; createdAt: number; invalidation: string };
+export type ChartAnnotationVisibility = { structure: boolean; sweeps: boolean; liquidity: boolean; fvgs: boolean; orderBlocks: boolean };
+export function filterChartAnnotations(annotations: ChartAnnotation[], visibility: ChartAnnotationVisibility): ChartAnnotation[] {
+  return annotations.filter((annotation) => {
+    if (annotation.kind === 'swing' || annotation.kind === 'break') return visibility.structure;
+    if (annotation.kind === 'sweep') return visibility.sweeps;
+    if (annotation.kind === 'liquidity') return visibility.liquidity;
+    if (annotation.kind === 'fvg') return visibility.fvgs;
+    return visibility.orderBlocks;
+  });
+}
 /** Maps engine findings only; it never derives or invents prices. Times are Unix seconds for lightweight-charts. */
 export function mapSMCAnnotations(a: SMCAssessment, swing = { left: 2, right: 2 }): ChartAnnotation[] {
   const rows: ChartAnnotation[] = [];
