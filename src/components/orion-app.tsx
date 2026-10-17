@@ -96,6 +96,7 @@ export default function OrionApp() {
   const [authNotice, setAuthNotice] = useState('');
   const [authError, setAuthError] = useState('');
   const [chatError, setChatError] = useState('');
+  const [chatNotice, setChatNotice] = useState('');
   const [failedPrompt, setFailedPrompt] = useState<string | null>(null);
   const [failedImage, setFailedImage] = useState<string | null>(null);
   const requestImageRef = useRef<string | null>(null);
@@ -375,12 +376,12 @@ export default function OrionApp() {
   async function signOut() {
     const client = getSupabaseBrowserClient();
     if (client) await client.auth.signOut();
-    setUser(null); setConversationId(null); setMessages([]); setProvider('openrouter'); setSelectedModel(openRouterInfo.model || ''); setChatTitle('New conversation');
+    setUser(null); setConversationId(null); setMessages([]); setChatNotice(''); setProvider('openrouter'); setSelectedModel(openRouterInfo.model || ''); setChatTitle('New conversation');
   }
 
   async function openConversation(conversation: Conversation) {
     setAttachedImage(null); setImageError('');
-    setChatError(''); setFailedPrompt(null); setLoading(false);
+    setChatError(''); setChatNotice(''); setFailedPrompt(null); setLoading(false);
     try {
       const response = await fetch(`/api/conversations?id=${encodeURIComponent(conversation.id)}`, { cache: 'no-store' });
       if (!response.ok) throw new Error(await responseError(response));
@@ -398,7 +399,7 @@ export default function OrionApp() {
 
   function newConversation() {
     abortRef.current?.abort(); abortRef.current = null;
-    setConversationId(null); setMessages([]); setProvider('openrouter'); setSelectedModel(openRouterInfo.model || ''); setChatTitle('New conversation'); setDraft(''); setAttachedImage(null); setImageError(''); setFailedImage(null); if (imageInputRef.current) imageInputRef.current.value = ''; setChatError(''); setFailedPrompt(null); setLoading(false); setChatSmcResult(null); setSmcToolEnabled(false); setActive('AI Chat'); setDrawer(false);
+    setConversationId(null); setMessages([]); setProvider('openrouter'); setSelectedModel(openRouterInfo.model || ''); setChatTitle('New conversation'); setDraft(''); setAttachedImage(null); setImageError(''); setFailedImage(null); if (imageInputRef.current) imageInputRef.current.value = ''; setChatError(''); setChatNotice(''); setFailedPrompt(null); setLoading(false); setChatSmcResult(null); setSmcToolEnabled(false); setActive('AI Chat'); setDrawer(false);
   }
 
   async function renameConversation(item: Conversation) {
@@ -463,7 +464,7 @@ export default function OrionApp() {
       setChatError('Gemini is not validated. Check GEMINI_API_KEY and GEMINI_MODEL on the server. Paid access remains disabled; only the configured verified free-tier model is allowed.');
       return;
     }
-    setChatError(''); setFailedPrompt(null); setFailedImage(null); requestImageRef.current = imageDataUrl || null; setDraft(''); setLoading(true); setChatSmcResult(null);
+    setChatError(''); setChatNotice(''); setFailedPrompt(null); setFailedImage(null); requestImageRef.current = imageDataUrl || null; setDraft(''); setLoading(true); setChatSmcResult(null);
     const requestId = ++activeRequestRef.current;
     let id = conversationId;
     try {
@@ -491,8 +492,10 @@ export default function OrionApp() {
         for (const line of lines) { if (line.startsWith('event:')) eventName = line.slice(6).trim(); else if (line.startsWith('data:')) dataText += line.slice(5).trim(); }
         if (!dataText) return;
         try {
-          const payload = JSON.parse(dataText) as { text?: string; message?: string; analysis?: SMCAssessment; source?: string; lastSuccessfulUpdate?: string; candles?:SMCResponse['candles']; strategyProfile?: { name:string; version:number } };
-          if (eventName === 'delta' && typeof payload.text === 'string') {
+          const payload = JSON.parse(dataText) as { text?: string; message?: string; analysis?: SMCAssessment; source?: string; lastSuccessfulUpdate?: string; candles?:SMCResponse['candles']; strategyProfile?: { name:string; version:number }; status?: string; count?: number };
+          if (eventName === 'journal-context') {
+            setChatNotice(payload.status === 'loaded' ? `Using ${payload.count || 0} saved journal entr${payload.count === 1 ? 'y' : 'ies'} for this reply. Orion does not learn permanently from this context.` : payload.status === 'empty' ? 'No saved journal entries found; this reply has no personal journal context.' : 'Saved journal context could not be loaded; this reply uses only the conversation and current tools.');
+          } else if (eventName === 'delta' && typeof payload.text === 'string') {
             setMessages((items) => { const next = [...items]; const last = next[next.length - 1]; if (last?.role === 'assistant') next[next.length - 1] = { ...last, text: last.text + payload.text, status: 'loading' }; return next; });
           } else if (eventName === 'smc-result' && payload.analysis) {
             if(payload.candles)setChatSmcResult({ analysis: payload.analysis, candles:payload.candles, source: payload.source || 'Bybit V5 public REST', lastSuccessfulUpdate: payload.lastSuccessfulUpdate || '', strategyProfile: payload.strategyProfile ? { id:'selected', ...payload.strategyProfile } : undefined });
@@ -569,6 +572,7 @@ export default function OrionApp() {
             {message.role === 'assistant' && <div className="assistant-avatar"><Sparkles size={15}/></div>}<div className="message-content"><div className="message-label">{message.role === 'assistant' ? 'ORION' : 'YOU'}{message.status === 'loading' && <LoaderCircle size={11} className="spin message-spinner"/>}</div>{message.imagePreview && <img className="chat-image-preview" src={message.imagePreview} alt="Attached chart screenshot"/>}<p>{message.text || (message.status === 'loading' ? 'Thinking…' : '')}</p>{message.status === 'stopped' && <small className="partial-note">Generation stopped · partial text was not saved</small>}</div></div>)}</div>}
         </div>
         {chatError && user && <div className="chat-error" role="alert"><span>{chatError}</span>{failedPrompt && !loading && <button onClick={() => void sendMessage(failedPrompt, true)}><RotateCcw size={12}/> Retry</button>}<button className="dismiss-error" aria-label="Dismiss message" onClick={() => setChatError('')}><X size={13}/></button></div>}
+        {chatNotice && user && <div className="inline-notice" role="status">{chatNotice}<button className="dismiss-error" aria-label="Dismiss journal context notice" onClick={() => setChatNotice('')}><X size={13}/></button></div>}
         <div className="composer-wrap"><div className="attachment-row"><span className="context-label">ADD CONTEXT</span><button onClick={() => setDraft((v) => v + (v ? ' ' : '') + 'BTCUSDT ')}>＋ Market</button><button onClick={() => setDraft((v) => v + (v ? ' ' : '') + '1H timeframe ')}>＋ Timeframe</button><button onClick={() => setDraft((v) => v + (v ? ' ' : '') + 'Journal review ')}>＋ Journal</button><button className={smcToolEnabled ? 'smc-tool-active' : ''} onClick={() => setSmcToolEnabled((enabled) => !enabled)}>＋ SMC tool {smcToolEnabled ? 'on' : ''}</button></div>{smcToolEnabled && <div className="smc-tool-controls"><label>Symbol<input value={smcSymbol} onChange={(event) => setSmcSymbol(event.target.value.toUpperCase())} maxLength={30}/></label><label>Market<select value={smcCategory} onChange={(event) => setSmcCategory(event.target.value as BybitCategory)}><option value="linear">Linear</option><option value="spot">Spot</option><option value="inverse">Inverse</option></select></label><label>Entry timeframe<select value={smcTimeframe} onChange={(event) => setSmcTimeframe(event.target.value as '30' | '60')}><option value="60">1H</option><option value="30">30M</option></select></label><small>Each send fetches Daily, 4H, 1H and 30M candles from Bybit before asking {provider === 'openrouter' ? 'OpenRouter' : 'Gemini'} to explain the deterministic result.</small></div>}{attachedImage && <div className="pending-image"><img src={attachedImage.dataUrl} alt="Chart screenshot preview"/><span>{attachedImage.name} · sent to the selected model only; not saved in chat history</span><button type="button" aria-label="Remove attached image" onClick={() => { setAttachedImage(null); if (imageInputRef.current) imageInputRef.current.value = ''; }}><X size={14}/></button></div>}{imageError && <div className="inline-error" role="alert">{imageError}</div>}<div className="composer"><textarea rows={1} placeholder={user ? provider === 'openai-compatible' || provider === 'deepseek-compatible' ? `${providerNames[provider]} is not configured…` : 'Ask Orion anything about your trading…' : 'Sign in to start a private conversation…'} value={draft} disabled={!user || loading} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void sendMessage(); } }} /><div className="composer-tools"><input ref={imageInputRef} className="visually-hidden-file" type="file" accept="image/png,image/jpeg,image/webp" aria-label="Choose a chart screenshot" onChange={(event) => void onImageSelected(event.currentTarget.files?.[0])}/><button className="attach-button" aria-label="Attach chart screenshot" title={provider === 'openrouter' && models.find((item) => item.id === selectedModel)?.supportsImages ? 'Attach a PNG, JPEG, or WebP chart image (3 MB maximum)' : 'Choose an OpenRouter vision model first'} disabled={!user || loading || provider !== 'openrouter' || !models.find((item) => item.id === selectedModel)?.supportsImages} onClick={() => imageInputRef.current?.click()}><ImageIcon size={17}/></button><span className="composer-hint">{provider === 'openrouter' ? models.find((item) => item.id === selectedModel)?.supportsImages ? 'Free model responses stream; image sent for analysis.' : 'Select an OpenRouter model marked Vision to attach a chart.' : 'Gemini image analysis is not enabled.'} Screenshots are not stored.</span>{loading ? <button className="send-button stop-button" aria-label="Stop generation" title="Stop generation" onClick={stopGeneration}><StopCircle size={16}/></button> : <button className="send-button" aria-label="Send message" onClick={() => void sendMessage()} disabled={(!draft.trim() && !attachedImage) || !user}><Send size={15}/></button>}</div></div><div className="composer-foot"><span><ShieldCheck size={12}/> Your workspace is private</span><span>ENTER TO SEND <kbd>↵</kbd></span></div></div>
       </div> : active === 'Voice Orion' ? <VoiceAssistantPanel/> : active === 'Forex Reference' ? <ForexReferencePage/> : active === 'Markets' ? <div className="market-page">
         <div className="market-heading"><div><div className="eyebrow"><span className="green-pip"/> BYBIT PUBLIC MARKET DATA</div><h1>Crypto markets</h1><p>Public candle data · no trading credentials</p></div><button className="market-refresh" onClick={() => setMarketRefreshToken((value) => value + 1)} disabled={marketBusy}><RotateCcw size={14}/> Refresh</button></div>

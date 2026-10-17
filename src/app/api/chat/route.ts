@@ -6,6 +6,7 @@ import { createSupabaseServerClient, supabaseConfiguration } from '@/lib/supabas
 import { BybitPublicMarketData, MarketDataError } from '@/lib/market/bybit';
 import { analyzeFromMarketData } from '@/lib/smc/market-analysis';
 import { DEFAULT_STRATEGY_PROFILE, resolveStrategyProfileRow, settingsToEngineOptions } from '@/lib/smc/strategy-profile';
+import { formatJournalContext, shouldRetrieveJournalContext, type JournalContextRecord } from '@/lib/journal/context';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -95,6 +96,29 @@ export async function POST(request: Request) {
   const history: ProviderMessage[] = input.retry
     ? (previousMessages || []).map((message) => ({ role: message.role as ProviderMessage['role'], content: message.content }))
     : [...(previousMessages || []).map((message) => ({ role: message.role as ProviderMessage['role'], content: message.content })), { role: 'user', content: input.message }];
+  let journalContextStatus: 'not-requested' | 'loaded' | 'empty' | 'unavailable' = 'not-requested';
+  let journalContextCount = 0;
+  if (shouldRetrieveJournalContext(input.mode, input.message)) {
+    try {
+      const { data: records, error } = await supabase.from('journal_entries')
+        .select('symbol,direction,timeframe,setup_type,outcome,rule_compliance,setup_quality,execution_quality,reasoning,hesitation,fomo,notes,created_at')
+        .eq('user_id', user.id).order('created_at', { ascending: false }).limit(8);
+      if (error) journalContextStatus = 'unavailable';
+      else if (!records?.length) journalContextStatus = 'empty';
+      else {
+        journalContextStatus = 'loaded';
+        journalContextCount = records.length;
+        const lastUserIndex = history.map((message) => message.role).lastIndexOf('user');
+        if (lastUserIndex >= 0) {
+          const previous = history[lastUserIndex].content;
+          const text = typeof previous === 'string' ? previous : previous.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
+          history[lastUserIndex] = { ...history[lastUserIndex], content: `${text}\n\n${formatJournalContext(records as JournalContextRecord[])}` };
+        }
+      }
+    } catch {
+      journalContextStatus = 'unavailable';
+    }
+  }
   if (smcResult) {
     const lastUserIndex = history.map((message) => message.role).lastIndexOf('user');
     if (lastUserIndex >= 0) history[lastUserIndex] = { ...history[lastUserIndex], content: `${history[lastUserIndex].content}\n\n[Verified deterministic SMC tool result from Bybit V5. The attached profile is the user's selected strategy and was used to calculate this result. Treat every calculated price level and state below as fixed engine output: do not alter, recalculate, or replace levels. Explain the rule evidence and call out missing confirmations. If data quality is invalid or stale, say no reliable setup conclusion can be made.]\n${JSON.stringify(smcProviderContext(smcResult, strategyProfile))}` };
@@ -132,6 +156,7 @@ export async function POST(request: Request) {
     async start(streamController) {
       let assistantText = '';
       try {
+        if (journalContextStatus !== 'not-requested') streamController.enqueue(encoder.encode(`event: journal-context\ndata: ${JSON.stringify({ status: journalContextStatus, count: journalContextCount })}\n\n`));
         if (smcResult) streamController.enqueue(encoder.encode(`event: smc-result\ndata: ${JSON.stringify({ source: smcResult.source, lastSuccessfulUpdate: smcResult.lastSuccessfulUpdate, analysis: smcResult.analysis, candles: smcResult.candles, strategyProfile: { name: strategyProfile.name, version: strategyProfile.version } })}\n\n`));
         for await (const chunk of stream) {
           if (controller.signal.aborted) break;
