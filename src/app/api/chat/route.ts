@@ -10,6 +10,7 @@ import { DEFAULT_STRATEGY_PROFILE, resolveStrategyProfileRow, settingsToEngineOp
 import { formatJournalContext, shouldRetrieveJournalContext, type JournalContextRecord } from '@/lib/journal/context';
 import { privateChartImagePath, validatePrivateChartImagePath } from '@/lib/supabase/private-chart-image';
 import { buildSmcProviderContext } from '@/lib/smc/provider-context';
+import { EMPTY_TRADING_RULES, checkEntryAgainstRules, formatRuleCheckContext, formatTradingRulesContext, isEmptyTradingRules, validateTradingRules, type RuleCheckableEntry } from '@/lib/journal/rules';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -94,16 +95,19 @@ export async function POST(request: Request) {
     : [...(previousMessages || []).map((message) => ({ role: message.role as ProviderMessage['role'], content: message.content })), { role: 'user', content: input.message }];
   let journalContextStatus: 'not-requested' | 'loaded' | 'empty' | 'unavailable' = 'not-requested';
   let journalContextCount = 0;
+  let latestEntry: RuleCheckableEntry | null = null;
   if (shouldRetrieveJournalContext(input.mode, input.message)) {
     try {
       const { data: records, error } = await supabase.from('journal_entries')
-        .select('symbol,direction,timeframe,setup_type,outcome,rule_compliance,setup_quality,execution_quality,reasoning,hesitation,fomo,notes,created_at')
+        .select('symbol,direction,timeframe,entry,stop_loss,target,setup_type,outcome,rule_compliance,setup_quality,execution_quality,reasoning,hesitation,fomo,notes,created_at')
         .eq('user_id', user.id).order('created_at', { ascending: false }).limit(8);
       if (error) journalContextStatus = 'unavailable';
       else if (!records?.length) journalContextStatus = 'empty';
       else {
         journalContextStatus = 'loaded';
         journalContextCount = records.length;
+        const first = records[0] as Record<string, unknown>;
+        if (typeof first.symbol === 'string' && typeof first.entry === 'number') latestEntry = { symbol: first.symbol, direction: String(first.direction ?? ''), timeframe: String(first.timeframe ?? ''), entry: first.entry, stop_loss: typeof first.stop_loss === 'number' ? first.stop_loss : null, target: typeof first.target === 'number' ? first.target : null };
         const lastUserIndex = history.map((message) => message.role).lastIndexOf('user');
         if (lastUserIndex >= 0) {
           const previous = history[lastUserIndex].content;
@@ -114,6 +118,19 @@ export async function POST(request: Request) {
     } catch {
       journalContextStatus = 'unavailable';
     }
+    try {
+      const { data: rulesRow, error: rulesError } = await supabase.from('trading_rules').select('settings').eq('user_id', user.id).maybeSingle();
+      if (!rulesError) {
+        const resolved = validateTradingRules(rulesRow?.settings ?? EMPTY_TRADING_RULES);
+        if (resolved.ok && !isEmptyTradingRules(resolved.rules)) {
+          const lastUserIndex = history.map((message) => message.role).lastIndexOf('user');
+          if (lastUserIndex >= 0) {
+            const text = `${history[lastUserIndex].content}\n\n${formatTradingRulesContext(resolved.rules)}`;
+            history[lastUserIndex] = { ...history[lastUserIndex], content: latestEntry ? `${text}\n\n${formatRuleCheckContext(latestEntry, resolved.rules, checkEntryAgainstRules(latestEntry, resolved.rules))}` : text };
+          }
+        }
+      }
+    } catch { /* rules context is optional; omit on failure */ }
   }
   if (smcResult) {
     const lastUserIndex = history.map((message) => message.role).lastIndexOf('user');
