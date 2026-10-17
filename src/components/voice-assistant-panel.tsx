@@ -2,7 +2,6 @@
 
 import { useState } from 'react';
 import { LiveKitRoom, RoomAudioRenderer, ControlBar, StartAudio } from '@livekit/components-react';
-import '@livekit/components-styles';
 import { Mic, ShieldCheck, Radio, LoaderCircle, Headphones, AlertTriangle } from 'lucide-react';
 
 type VoiceSession = { token: string; serverUrl: string; roomName: string; agentName: string };
