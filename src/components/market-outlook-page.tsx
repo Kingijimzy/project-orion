@@ -1,12 +1,21 @@
 'use client';
 
-import { FormEvent, useState } from 'react';
+import { FormEvent, useMemo, useState } from 'react';
 import { ExternalLink, LoaderCircle, Search } from 'lucide-react';
 import type { BybitCategory } from '@/lib/market/bybit';
-import type { SMCAssessment } from '@/lib/smc/engine';
+import type { OHLCV, SMCAssessment } from '@/lib/smc/engine';
+import { buildScenarios } from '@/lib/smc/scenarios';
 import type { OfficialNewsItem } from '@/lib/news/official-feeds';
 
-type OutlookResult = { analysis: SMCAssessment; source: string; lastSuccessfulUpdate: string };
+type OutlookCandles = { daily: OHLCV[]; fourHour: OHLCV[]; oneHour: OHLCV[]; thirtyMinute: OHLCV[] };
+type OutlookResult = { analysis: SMCAssessment; source: string; lastSuccessfulUpdate: string; candles?: OutlookCandles };
+function currentPrice(result: OutlookResult | null): number | null {
+  if (!result?.candles) return null;
+  const series = result.analysis.timeframe === '30' ? result.candles.thirtyMinute : result.candles.oneHour;
+  const closed = series.filter((candle) => candle.closed !== false);
+  const match = closed.find((candle) => candle.timestamp === result.analysis.structure.lastCandleTimestamp) ?? closed.at(-1);
+  return match?.close ?? null;
+}
 type BacktestResult = {
   evaluationPoints: number;
   byState: Record<string, number>;
@@ -28,6 +37,15 @@ export function MarketOutlookPage() {
   const [newsWarning, setNewsWarning] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+
+  const scenarios = useMemo(() => {
+    if (!result) return null;
+    return buildScenarios({
+      analysis: result.analysis,
+      lastPrice: currentPrice(result),
+      historicalContext: backtest ? { resolved: backtest.totals.resolved, winRate: backtest.totals.winRate, averageR: backtest.totals.averageR, riskReward: backtest.engineInput.riskReward } : null,
+    });
+  }, [result, backtest]);
 
   async function analyze(event?: FormEvent) {
     event?.preventDefault(); setBusy(true); setError(''); setNewsWarning(''); setBacktestWarning(''); setBacktest(null);
@@ -76,7 +94,8 @@ export function MarketOutlookPage() {
         </> : <p>No Qualified state resolved within the replay window, so no base rate can be shown. That is a valid, honest result.</p>}
         <h3>Caveats</h3><ul>{backtest.caveats.map((item, index) => <li key={index}>{item}</li>)}</ul>
       </>}</section>
-      <p className="smc-engine-note">This page reports sourced information, deterministic technical rules, and an explicitly bounded historical base rate. It does not infer news impact or provide an execution signal.</p>
+      {scenarios && <section className="feature-card outlook-scenarios"><h2>Conditional scenarios · no confidence score</h2><p className="outlook-disclaimer">Every level below comes from the engine's own swings, liquidity pools, gaps, and order blocks. Scenarios are conditional rule descriptions, not probabilities.</p>{scenarios.lastPrice !== null && <p className="smc-timeframe-note">Reference price {scenarios.lastPrice.toFixed(6)} · state {scenarios.state} · bias {scenarios.bias}</p>}{scenarios.scenarios.map((scenario, index) => <article className={`outlook-scenario outlook-scenario-${scenario.kind}`} key={`${scenario.kind}-${index}`}><div className="outlook-scenario-head"><b>{scenario.title}</b><span>{scenario.kind}</span></div><p>{scenario.thesis}</p>{scenario.entryZones.length > 0 && <><h3>Entry zones</h3><ul>{scenario.entryZones.map((zone, zoneIndex) => <li key={`z-${zoneIndex}`}>{zone.label} <small>· {zone.source}</small></li>)}</ul></>}{scenario.targets.length > 0 && <><h3>Targets</h3><ul>{scenario.targets.map((target, targetIndex) => <li key={`t-${targetIndex}`}>{target.label} <small>· {target.source}</small></li>)}</ul></>}<h3>Triggers</h3><ul>{scenario.triggers.map((trigger, triggerIndex) => <li key={`tr-${triggerIndex}`}>{trigger}</li>)}</ul><h3>Invalidation</h3><ul>{scenario.invalidation.map((item, invalidIndex) => <li key={`i-${invalidIndex}`}>{item}</li>)}</ul></article>)}{scenarios.historicalContext && <p className="smc-timeframe-note">Historical context from the base rate: {scenarios.historicalContext.resolved} resolved sample{scenarios.historicalContext.winRate === null ? '' : `, ${Math.round(scenarios.historicalContext.winRate * 100)}% target-hit at ${scenarios.historicalContext.riskReward}R`}. This is sample context, not this scenario's probability.</p>}<ul className="outlook-scenario-notes">{scenarios.notes.map((note, index) => <li key={index}>{note}</li>)}</ul></section>}
+      <p className="smc-engine-note">This page reports sourced information, deterministic technical rules, an explicitly bounded historical base rate, and conditional scenarios without invented confidence. It does not infer news impact or provide an execution signal.</p>
     </>}
   </div>;
 }
