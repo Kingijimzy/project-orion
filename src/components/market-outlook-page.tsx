@@ -7,24 +7,41 @@ import type { SMCAssessment } from '@/lib/smc/engine';
 import type { OfficialNewsItem } from '@/lib/news/official-feeds';
 
 type OutlookResult = { analysis: SMCAssessment; source: string; lastSuccessfulUpdate: string };
+type BacktestResult = {
+  evaluationPoints: number;
+  byState: Record<string, number>;
+  totals: { signals: number; actionable: number; target: number; stop: number; expired: number; open: number; resolved: number; winRate: number | null; averageR: number | null; expectancyR: number | null };
+  engineInput: { riskReward: number; forwardBars: number; stride: number; maxEvaluations: number };
+  caveats: string[];
+  strategyProfile?: { name: string; version: number };
+  lastEvaluationTimestamp?: number | null;
+};
 
 export function MarketOutlookPage() {
   const [symbol, setSymbol] = useState('BTCUSDT');
   const [category, setCategory] = useState<BybitCategory>('linear');
   const [timeframe, setTimeframe] = useState<'30' | '60'>('60');
   const [result, setResult] = useState<OutlookResult | null>(null);
+  const [backtest, setBacktest] = useState<BacktestResult | null>(null);
+  const [backtestWarning, setBacktestWarning] = useState('');
   const [news, setNews] = useState<OfficialNewsItem[]>([]);
   const [newsWarning, setNewsWarning] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
   async function analyze(event?: FormEvent) {
-    event?.preventDefault(); setBusy(true); setError(''); setNewsWarning('');
+    event?.preventDefault(); setBusy(true); setError(''); setNewsWarning(''); setBacktestWarning(''); setBacktest(null);
     try {
       const marketResponse = await fetch('/api/smc/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbol, category, timeframe }) });
       const market = await marketResponse.json() as OutlookResult & { message?: string };
       if (!marketResponse.ok) throw new Error(market.message || 'Bybit market analysis is unavailable.');
       setResult(market);
+      try {
+        const backtestResponse = await fetch('/api/smc/backtest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbol, category, timeframe }) });
+        const baseRate = await backtestResponse.json() as BacktestResult & { message?: string };
+        if (backtestResponse.ok) setBacktest(baseRate);
+        else setBacktestWarning(baseRate.message || 'Historical base rate is unavailable.');
+      } catch { setBacktestWarning('Historical base rate could not be reached; the current assessment is shown separately.'); }
       try {
         const newsResponse = await fetch('/api/news', { cache: 'no-store' });
         const feed = await newsResponse.json() as { items?: OfficialNewsItem[]; message?: string };
@@ -47,7 +64,19 @@ export function MarketOutlookPage() {
       <section className="outlook-state"><div><span className="eyebrow">DETERMINISTIC STATE · {assessment.symbol} · {assessment.timeframe === '30' ? '30M' : '1H'}</span><h2>{assessment.state}</h2></div><span className={assessment.dataQuality.valid && !assessment.dataQuality.stale ? 'outlook-quality' : 'outlook-quality outlook-warning'}>{assessment.dataQuality.valid && !assessment.dataQuality.stale ? 'Data quality acceptable' : 'Data quality limits conclusion'}</span><p>{result?.source} · candles last updated {new Date(result?.lastSuccessfulUpdate || '').toLocaleString()} · analysis {new Date(assessment.analysisTimestamp).toLocaleString()}</p>{(!assessment.dataQuality.valid || assessment.dataQuality.stale) && <div className="market-warning">{assessment.dataQuality.issues.join(' ') || 'Verify candle freshness and quality before relying on this result.'}</div>}</section>
       <div className="outlook-columns"><section className="feature-card"><h2>Technical evidence</h2><h3>Supporting</h3>{assessment.supportingEvidence.length ? <ul>{assessment.supportingEvidence.map((item, index) => <li key={index}>{item}</li>)}</ul> : <p>No supporting rule evidence.</p>}<h3>Conflicting</h3>{assessment.conflictingEvidence.length ? <ul>{assessment.conflictingEvidence.map((item, index) => <li key={index}>{item}</li>)}</ul> : <p>No conflict detected in evaluated rules.</p>}<h3>Invalidation and confirmation</h3><ul>{assessment.invalidationConditions.map((item, index) => <li key={`i-${index}`}>{item}</li>)}{assessment.requiredConfirmation.map((item, index) => <li key={`c-${index}`}>Confirm: {item}</li>)}</ul></section>
         <section className="feature-card"><h2>Official U.S. macro headlines</h2><p className="outlook-disclaimer">These are source headlines, not a market-impact rating. No consensus forecasts or event values are provided.</p>{newsWarning && <div className="market-warning">{newsWarning}</div>}{news.length ? news.map((item) => <article className="outlook-news-item" key={item.url}><small>{item.source} · {item.publishedAt ? new Date(item.publishedAt).toLocaleString() : 'time unavailable'}</small><a href={item.url} target="_blank" rel="noreferrer">{item.title} <ExternalLink size={11}/></a></article>) : !newsWarning ? <p>No headline items were returned.</p> : null}<div className="outlook-calendar-links"><a href={`https://www.bls.gov/schedule/${new Date().getUTCFullYear()}/`} target="_blank" rel="noreferrer">BLS release schedule <ExternalLink size={11}/></a><a href="https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm" target="_blank" rel="noreferrer">FOMC calendar <ExternalLink size={11}/></a></div></section></div>
-      <p className="smc-engine-note">This page reports sourced information and deterministic technical rules. It does not calculate probabilities, infer news impact, or provide an execution signal.</p>
+      <section className="feature-card outlook-backtest"><h2>Historical base rate · this rule set</h2><p className="outlook-disclaimer">A bounded replay of the same deterministic rules over recent closed candles. It is an empirical sample, not a forecast, and it is not a profitability estimate.</p>{backtestWarning && <div className="market-warning">{backtestWarning}</div>}{backtest && <>
+        <div className="analytics-row"><span>Evaluation points</span><b>{backtest.evaluationPoints}</b></div>
+        <div className="analytics-row"><span>Qualified states found</span><b>{backtest.byState.Qualified ?? 0}</b></div>
+        {backtest.totals.resolved > 0 ? <>
+          <div className="analytics-row"><span>Target hit ({backtest.engineInput.riskReward}R) / stop hit</span><b>{backtest.totals.target} / {backtest.totals.stop}</b></div>
+          <div className="analytics-row"><span>Resolved sample</span><b>{backtest.totals.resolved}</b></div>
+          <div className="analytics-row"><span>Win rate excluding expiry</span><b>{backtest.totals.winRate === null ? 'n/a' : `${Math.round(backtest.totals.winRate * 100)}%`}</b></div>
+          <div className="analytics-row"><span>Average R (expiry counted as 0)</span><b>{backtest.totals.averageR === null ? 'n/a' : backtest.totals.averageR.toFixed(2)}</b></div>
+          {backtest.totals.expired > 0 && <div className="analytics-row"><span>Expired without target or stop ({backtest.engineInput.forwardBars} bars)</span><b>{backtest.totals.expired}</b></div>}
+        </> : <p>No Qualified state resolved within the replay window, so no base rate can be shown. That is a valid, honest result.</p>}
+        <h3>Caveats</h3><ul>{backtest.caveats.map((item, index) => <li key={index}>{item}</li>)}</ul>
+      </>}</section>
+      <p className="smc-engine-note">This page reports sourced information, deterministic technical rules, and an explicitly bounded historical base rate. It does not infer news impact or provide an execution signal.</p>
     </>}
   </div>;
 }

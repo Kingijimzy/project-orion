@@ -307,7 +307,7 @@ export function analyzeMultiTimeframe(input: { symbol: string; candles: { daily:
   const recentSweep = structure.sweeps.filter((s) => s.confirmed && s.rejectionObserved && s.kind === (higherTimeframeBias === 'bullish' ? 'low' : 'high')).at(-1);
   const directionalBreak = structure.structureBreaks.filter((b) => b.confirmed && b.direction === higherTimeframeBias && (!recentSweep || b.timestamp > recentSweep.timestamp)).at(-1);
   const alignedZones = [...structure.fvgs.filter((g) => g.confirmed && g.status !== 'filled' && g.status !== 'invalidated' && g.direction === higherTimeframeBias), ...structure.orderBlocks.filter((b) => b.confirmed && b.status === 'unmitigated' && b.direction === higherTimeframeBias)];
-  const lastCandle = (timeframe === '30' ? candles.thirtyMinute : candles.oneHour).filter((c) => options.includeForming || isClosed(c)).at(-1);
+  const lastCandle = selectedCandles.filter((c) => options.includeForming || isClosed(c)).at(-1);
   const retest = Boolean(lastCandle && alignedZones.some((zone) => zoneRetested(lastCandle, zone)));
   const confluenceCount = [dailyBias === fourHourBias && higherTimeframeBias !== 'neutral', structure.structure === higherTimeframeBias && higherTimeframeBias !== 'neutral', Boolean(recentSweep), Boolean(directionalBreak), Boolean(alignedZones.length && retest)].filter(Boolean).length;
   if (directionalBreak) supportingEvidence.push(`Confirmed ${directionalBreak.kind} ${directionalBreak.direction} at ${directionalBreak.price} on ${new Date(directionalBreak.timestamp).toISOString()}.`);
