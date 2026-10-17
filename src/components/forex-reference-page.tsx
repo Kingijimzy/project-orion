@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { LoaderCircle, RotateCcw } from 'lucide-react';
 import { getForexSessionState } from '@/lib/market/forex-session';
+import { ForexCandlestickChart } from './forex-candlestick-chart';
+import { FOREX_INTERVALS, FOREX_PAIRS, type ForexCandle, type ForexInterval, type ForexPair } from '@/lib/market/twelve-data-forex';
 
 const currencies = ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'NZD'];
 type RatesResponse = {
@@ -15,6 +17,7 @@ type RatesResponse = {
   fetchedAt: string;
 };
 type ApiError = { message?: string };
+type ForexCandlesResponse = { pair: ForexPair; interval: ForexInterval; candles: ForexCandle[]; source: string; fetchedAt: string; freshness: string };
 
 async function readError(response: Response) {
   try { return (await response.json() as ApiError).message || 'Could not load reference rates.'; }
@@ -82,6 +85,7 @@ export function ForexReferencePage() {
       <h1>FX reference rates</h1>
       <p>Daily mid-market reference rates from Frankfurter. These are not broker quotes, intraday candles, or executable prices.</p>
     </header>
+    <ForexIntradayPanel />
     <section className="feature-card">
       <div className="forex-session-status">
         <span className={`forex-session-dot ${sessionState ? `forex-session-${sessionState}` : ''}`} />
@@ -123,4 +127,40 @@ export function ForexReferencePage() {
       <p>Frankfurter uses public reference-rate data with no API key. Rates update on provider publication schedules (generally daily) and may be missing or revised. Orion does not use these values as live forex trading prices and does not provide forex OHLC candles from this source.</p>
     </section>
   </div>;
+}
+
+function ForexIntradayPanel() {
+  const [pair, setPair] = useState<ForexPair>('EUR/USD');
+  const [interval, setInterval] = useState<ForexInterval>('1h');
+  const [data, setData] = useState<ForexCandlesResponse | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [refresh, setRefresh] = useState(0);
+  const load = useCallback(async (signal: AbortSignal) => {
+    setBusy(true); setError('');
+    try {
+      const params = new URLSearchParams({ pair, interval, outputsize: '120' });
+      const response = await fetch(`/api/forex/candles?${params}`, { cache: 'no-store', signal });
+      if (!response.ok) throw new Error(await readError(response));
+      const result = await response.json() as ForexCandlesResponse;
+      if (result.pair !== pair || result.interval !== interval || !Array.isArray(result.candles) || !result.candles.length) throw new Error('The provider returned no valid candles for this selection.');
+      setData(result);
+    } catch (cause) {
+      if (cause instanceof DOMException && cause.name === 'AbortError') return;
+      setData(null); setError(cause instanceof Error ? cause.message : 'Could not load forex candles.');
+    } finally { setBusy(false); }
+  }, [pair, interval]);
+  useEffect(() => { const controller = new AbortController(); void load(controller.signal); return () => controller.abort(); }, [load, refresh]);
+  return <section className="feature-card">
+    <h2>Forex intraday candles</h2>
+    <p>Provider: Twelve Data. Its Basic free plan advertises real-time forex data and 800 daily API credits (8 credits per minute); each time-series symbol request costs one credit. Final candles may arrive roughly 0.3–2 minutes after close. For personal/internal use only.</p>
+    <div className="forex-controls">
+      <label>PAIR<select value={pair} onChange={(event) => setPair(event.target.value as ForexPair)}>{FOREX_PAIRS.map((value) => <option key={value}>{value}</option>)}</select></label>
+      <label>INTERVAL<select value={interval} onChange={(event) => setInterval(event.target.value as ForexInterval)}>{FOREX_INTERVALS.map((value) => <option key={value}>{value}</option>)}</select></label>
+      <button className="market-refresh" onClick={() => setRefresh((value) => value + 1)} disabled={busy}>{busy ? <><LoaderCircle size={14} className="spin"/> Loading</> : <><RotateCcw size={14}/> Refresh</>}</button>
+    </div>
+    {error && <div className="inline-error market-error" role="alert">{error}<button onClick={() => setRefresh((value) => value + 1)}>Retry</button></div>}
+    {data && <><div className="feature-notice">{data.source} · received {new Date(data.fetchedAt).toLocaleString()} · {data.freshness}</div><ForexCandlestickChart pair={data.pair} interval={data.interval} candles={data.candles}/>{busy && <div className="feature-notice">Refreshing… showing previous candles.</div>}</>}
+    {!data && !error && <div className="feature-notice">{busy ? 'Loading actual forex candles…' : 'No candles available.'}</div>}
+  </section>;
 }
