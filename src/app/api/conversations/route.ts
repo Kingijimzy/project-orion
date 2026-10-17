@@ -3,6 +3,7 @@ import { validateConversationTitle } from '@/lib/ai/chat-validation';
 import { readLimitedJson } from '@/lib/api/read-json';
 import { createProvider, ProviderError } from '@/lib/ai/provider';
 import { createSupabaseServerClient, supabaseConfiguration } from '@/lib/supabase/server';
+import { validatePrivateChartImagePath } from '@/lib/supabase/private-chart-image';
 
 export const runtime = 'nodejs';
 const unavailable = () => NextResponse.json({ error: 'supabase_not_configured', message: 'Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY, then apply the database migration.' }, { status: 503 });
@@ -38,7 +39,7 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const conversationId = url.searchParams.get('id');
   if (conversationId) {
-    const { data, error } = await auth.supabase.from('conversations').select('id,title,provider,model_id,created_at,updated_at,messages(id,role,content,provider,model_id,assistant_mode,created_at)').eq('id', conversationId).eq('user_id', auth.user.id).single();
+    const { data, error } = await auth.supabase.from('conversations').select('id,title,provider,model_id,created_at,updated_at,messages(id,role,content,metadata,provider,model_id,assistant_mode,created_at)').eq('id', conversationId).eq('user_id', auth.user.id).single();
     if (error || !data) return NextResponse.json({ error: 'conversation_not_found', message: 'Conversation not found.' }, { status: 404 });
     const messages = [...(data.messages || [])].sort((a, b) => a.created_at.localeCompare(b.created_at));
     return NextResponse.json({ conversation: { ...data, messages } });
@@ -92,8 +93,14 @@ export async function DELETE(request: Request) {
   if ('error' in auth) return auth.error;
   const id = new URL(request.url).searchParams.get('id');
   if (!id) return NextResponse.json({ error: 'invalid_request', message: 'Conversation ID is required.' }, { status: 400 });
+  const { data: messages } = await auth.supabase.from('messages').select('metadata').eq('conversation_id', id).eq('user_id', auth.user.id);
+  const imagePaths = (messages || []).map((message) => validatePrivateChartImagePath((message.metadata as Record<string, unknown> | null)?.chartImagePath, auth.user.id, id)).filter((path): path is string => Boolean(path));
   const { data, error } = await auth.supabase.from('conversations').delete().eq('id', id).eq('user_id', auth.user.id).select('id').maybeSingle();
   if (error) return NextResponse.json({ error: 'conversation_delete_failed', message: 'Could not delete this conversation.' }, { status: 500 });
   if (!data) return NextResponse.json({ error: 'conversation_not_found', message: 'Conversation not found.' }, { status: 404 });
-  return NextResponse.json({ ok: true });
+  if (imagePaths.length) {
+    const { error: cleanupError } = await auth.supabase.storage.from('orion-chart-images').remove([...new Set(imagePaths)]);
+    return NextResponse.json({ ok: true, imageCleanup: cleanupError ? 'pending' : 'complete' });
+  }
+  return NextResponse.json({ ok: true, imageCleanup: 'not-needed' });
 }

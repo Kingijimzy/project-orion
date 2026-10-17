@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { randomUUID } from 'node:crypto';
 import { validateChatRequest } from '@/lib/ai/chat-validation';
 import { readLimitedJson } from '@/lib/api/read-json';
 import { createProvider, ProviderError, type ProviderMessage } from '@/lib/ai/provider';
@@ -7,6 +8,7 @@ import { BybitPublicMarketData, MarketDataError } from '@/lib/market/bybit';
 import { analyzeFromMarketData } from '@/lib/smc/market-analysis';
 import { DEFAULT_STRATEGY_PROFILE, resolveStrategyProfileRow, settingsToEngineOptions } from '@/lib/smc/strategy-profile';
 import { formatJournalContext, shouldRetrieveJournalContext, type JournalContextRecord } from '@/lib/journal/context';
+import { privateChartImagePath, validatePrivateChartImagePath } from '@/lib/supabase/private-chart-image';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -82,15 +84,29 @@ export async function POST(request: Request) {
     const { data: savedAnalysis } = await supabase.from('smc_analyses').insert({ user_id:user.id, symbol:input.smcRequest.symbol, market_category:input.smcRequest.category, timeframe:input.smcRequest.timeframe, analysis_timestamp:new Date(smcResult.analysis.analysisTimestamp).toISOString(), last_market_update:smcResult.lastSuccessfulUpdate, candle_snapshot:smcResult.candles, data_quality:quality, strategy_profile_id:strategyProfile.id === DEFAULT_STRATEGY_PROFILE.id ? null : strategyProfile.id, strategy_name:strategyProfile.name, strategy_version:strategyProfile.version, strategy_settings:strategyProfile.settings, engine_version:'orion-smc-1.1.0', findings:smcResult.analysis }).select('id').single();
     if (savedAnalysis) savedSmcAnalysisId=savedAnalysis.id;
   }
-  const { data: previousMessages, error: historyError } = await supabase.from('messages').select('role,content').eq('conversation_id', input.conversationId).eq('user_id', user.id).order('created_at', { ascending: true }).limit(80);
+  const { data: previousMessages, error: historyError } = await supabase.from('messages').select('id,role,content,metadata').eq('conversation_id', input.conversationId).eq('user_id', user.id).order('created_at', { ascending: true }).limit(80);
   if (historyError) return jsonError(500, 'history_load_failed', 'Could not load conversation history. Try again.');
 
   if (input.retry) {
     const last = previousMessages?.at(-1);
     if (!last || last.role !== 'user' || last.content !== input.message) return jsonError(409, 'retry_not_available', 'There is no matching user message to retry.');
-  } else {
-    const { error: saveUserError } = await supabase.from('messages').insert({ conversation_id: input.conversationId, user_id: user.id, role: 'user', content: input.message, provider: input.provider, model_id: input.model, assistant_mode: input.mode });
-    if (saveUserError) return jsonError(500, 'message_save_failed', 'Could not save your message. Try again.');
+  }
+  let imagePath: string | null = null;
+  if (input.image) {
+    const previousPath = input.retry ? (previousMessages?.at(-1)?.metadata as Record<string, unknown> | null)?.chartImagePath : null;
+    imagePath = validatePrivateChartImagePath(previousPath, user.id, input.conversationId);
+    if (!input.retry) {
+      imagePath = privateChartImagePath(user.id, input.conversationId, input.image.mimeType, randomUUID());
+      const { error: uploadError } = await supabase.storage.from('orion-chart-images').upload(imagePath, Buffer.from(input.image.base64, 'base64'), { contentType: input.image.mimeType, cacheControl: '0', upsert: false });
+      if (uploadError) return jsonError(503, 'image_storage_unavailable', 'Could not save this screenshot privately. Apply the private chart image Supabase migration, then retry.');
+    }
+  }
+  if (!input.retry) {
+    const { error: saveUserError } = await supabase.from('messages').insert({ conversation_id: input.conversationId, user_id: user.id, role: 'user', content: input.message, provider: input.provider, model_id: input.model, assistant_mode: input.mode, ...(imagePath ? { metadata: { chartImagePath: imagePath } } : {}) });
+    if (saveUserError) {
+      if (imagePath) await supabase.storage.from('orion-chart-images').remove([imagePath]);
+      return jsonError(500, 'message_save_failed', 'Could not save your message. Try again.');
+    }
   }
   await supabase.from('conversations').update({ provider: input.provider, model_id: input.model, updated_at: new Date().toISOString() }).eq('id', input.conversationId).eq('user_id', user.id);
   const history: ProviderMessage[] = input.retry
@@ -156,6 +172,7 @@ export async function POST(request: Request) {
     async start(streamController) {
       let assistantText = '';
       try {
+        if (imagePath) streamController.enqueue(encoder.encode(`event: image-stored\ndata: ${JSON.stringify({ path: imagePath })}\n\n`));
         if (journalContextStatus !== 'not-requested') streamController.enqueue(encoder.encode(`event: journal-context\ndata: ${JSON.stringify({ status: journalContextStatus, count: journalContextCount })}\n\n`));
         if (smcResult) streamController.enqueue(encoder.encode(`event: smc-result\ndata: ${JSON.stringify({ source: smcResult.source, lastSuccessfulUpdate: smcResult.lastSuccessfulUpdate, analysis: smcResult.analysis, candles: smcResult.candles, strategyProfile: { name: strategyProfile.name, version: strategyProfile.version } })}\n\n`));
         for await (const chunk of stream) {
