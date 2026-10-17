@@ -9,6 +9,7 @@ import { analyzeFromMarketData } from '@/lib/smc/market-analysis';
 import { DEFAULT_STRATEGY_PROFILE, resolveStrategyProfileRow, settingsToEngineOptions } from '@/lib/smc/strategy-profile';
 import { formatJournalContext, shouldRetrieveJournalContext, type JournalContextRecord } from '@/lib/journal/context';
 import { privateChartImagePath, validatePrivateChartImagePath } from '@/lib/supabase/private-chart-image';
+import { buildSmcProviderContext } from '@/lib/smc/provider-context';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -16,27 +17,6 @@ const marketData = new BybitPublicMarketData();
 
 function jsonError(status: number, error: string, message: string) {
   return NextResponse.json({ error, message }, { status });
-}
-
-function smcProviderContext(result: NonNullable<Awaited<ReturnType<typeof analyzeFromMarketData>>>, profile: typeof DEFAULT_STRATEGY_PROFILE) {
-  const analysis = result.analysis;
-  const reduceTimeframe = (item: typeof analysis.structure) => ({
-    timeframe: item.timeframe, structure: item.structure, lastCandleTimestamp: item.lastCandleTimestamp, lastCandleClosed: item.lastCandleClosed, dataQuality: item.dataQuality,
-    swings: item.swings.slice(-12), structureBreaks: item.structureBreaks.slice(-10), liquidityPools: item.liquidityPools.slice(-10), sweeps: item.sweeps.slice(-8), fvgs: item.fvgs.slice(-12), orderBlocks: item.orderBlocks.slice(-12),
-  });
-  return {
-    source: result.source, lastSuccessfulUpdate: result.lastSuccessfulUpdate,
-    strategyProfile: { name: profile.name, version: profile.version, settings: profile.settings },
-    analysis: {
-      symbol: analysis.symbol, timeframe: analysis.timeframe, analysisTimestamp: analysis.analysisTimestamp, state: analysis.state,
-      higherTimeframeBias: analysis.higherTimeframeBias, dailyBias: analysis.dailyBias, fourHourBias: analysis.fourHourBias, lowerTimeframeStructure: analysis.lowerTimeframeStructure,
-      higherTimeframes: { daily: reduceTimeframe(analysis.higherTimeframes.daily), fourHour: reduceTimeframe(analysis.higherTimeframes.fourHour) },
-      structure: reduceTimeframe(analysis.structure), alignedCandles: analysis.alignedCandles.slice(-8), relevantLiquidity: analysis.relevantLiquidity,
-      fvgs: analysis.fvgs.slice(-12), orderBlocks: analysis.orderBlocks.slice(-12), supportingEvidence: analysis.supportingEvidence,
-      conflictingEvidence: analysis.conflictingEvidence, requiredConfirmation: analysis.requiredConfirmation,
-      invalidationConditions: analysis.invalidationConditions, dataQuality: analysis.dataQuality, qualificationRule: analysis.qualificationRule,
-    },
-  };
 }
 
 export async function POST(request: Request) {
@@ -137,7 +117,7 @@ export async function POST(request: Request) {
   }
   if (smcResult) {
     const lastUserIndex = history.map((message) => message.role).lastIndexOf('user');
-    if (lastUserIndex >= 0) history[lastUserIndex] = { ...history[lastUserIndex], content: `${history[lastUserIndex].content}\n\n[Verified deterministic SMC tool result from Bybit V5. The attached profile is the user's selected strategy and was used to calculate this result. Treat every calculated price level and state below as fixed engine output: do not alter, recalculate, or replace levels. Explain the rule evidence and call out missing confirmations. If data quality is invalid or stale, say no reliable setup conclusion can be made.]\n${JSON.stringify(smcProviderContext(smcResult, strategyProfile))}` };
+    if (lastUserIndex >= 0) history[lastUserIndex] = { ...history[lastUserIndex], content: `${history[lastUserIndex].content}\n\n[Verified deterministic SMC tool result from Bybit V5. The attached profile is the user's selected strategy and was used to calculate this result. Treat every calculated price level, scenario, target, and state below as fixed engine output: do not alter, recalculate, replace, or invent levels or scenarios. The scenarios are conditional rule descriptions from the engine, not probabilities; never attach a confidence percentage or probability to a scenario, and never present one as a certainty. Explain the rule evidence and call out missing confirmations. If data quality is invalid or stale, say no reliable setup conclusion can be made.]\n${JSON.stringify(buildSmcProviderContext(smcResult, strategyProfile))}` };
   }
   if (input.image) {
     const lastUserIndex = history.map((message) => message.role).lastIndexOf('user');
