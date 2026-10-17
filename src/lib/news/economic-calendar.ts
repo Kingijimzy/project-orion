@@ -85,8 +85,38 @@ export function parseBlsCalendar(ics: string, now = new Date(), horizonDays = HO
   });
 }
 
+export function parseBlsScheduleList(html: string, sourceUrl: string, now = new Date(), horizonDays = HORIZON_DAYS): EconomicCalendarEvent[] {
+  if (html.length > MAX_FEED_CHARS || !/<table\b[^>]*class=["'][^"']*release-list/i.test(html)) return [];
+  const horizon = new Date(now.getTime() + horizonDays * 86_400_000);
+  const table = html.match(/<table\b[^>]*class=["'][^"']*release-list[^"']*["'][^>]*>([\s\S]*?)<\/table>/i)?.[1];
+  if (!table) return [];
+  const plain = (value: string) => decodeHtml(value.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim());
+  const rows = table.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi) || [];
+  return rows.flatMap((row) => {
+    const cells = [...row.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map((match) => plain(match[1]));
+    if (cells.length < 3) return [];
+    const dateMatch = cells[0].match(/(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s+([A-Z][a-z]+)\s+(\d{1,2}),\s+(\d{4})/);
+    if (!dateMatch) return [];
+    const month = MONTHS[dateMatch[1]];
+    if (month === undefined) return [];
+    const day = Number(dateMatch[2]);
+    const year = Number(dateMatch[3]);
+    const eventDate = new Date(Date.UTC(year, month, day)).toISOString().slice(0, 10);
+    const title = cells[2].trim();
+    if (!title || /\b(?:holiday|Columbus Day|Veterans Day|Memorial Day|Independence Day|Juneteenth|Labor Day|Thanksgiving Day)\b/i.test(title)) return [];
+    const timeMatch = cells[1].match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+    const startsAt = timeMatch ? (() => {
+      const hour12 = Number(timeMatch[1]) % 12;
+      const hour = hour12 + (timeMatch[3].toUpperCase() === 'PM' ? 12 : 0);
+      return localEasternToIso(`${year}${String(month + 1).padStart(2, '0')}${String(day).padStart(2, '0')}T${String(hour).padStart(2, '0')}${timeMatch[2]}00`, 'America/New_York');
+    })() : null;
+    if (startsAt ? !upcoming(startsAt, now, horizon) : eventDate < dateInZone(now, 'America/New_York') || eventDate > dateInZone(horizon, 'America/New_York')) return [];
+    return [makeEvent({ id: `bls-schedule-${eventDate}-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, title, category: categorize(title), source: 'U.S. Bureau of Labor Statistics', sourceUrl, eventDate, startsAt, endsAt: null, timeZone: 'America/New_York', dateOnly: !startsAt })];
+  });
+}
+
 const MONTHS: Record<string, number> = { January: 0, February: 1, March: 2, April: 3, May: 4, June: 5, July: 6, August: 7, September: 8, October: 9, November: 10, December: 11 };
-function decodeHtml(value: string) { return value.replace(/&amp;/g, '&').replace(/&#39;|&apos;/g, "'").replace(/&nbsp;/g, ' ').replace(/&ndash;/g, '–').replace(/&mdash;/g, '—').trim(); }
+function decodeHtml(value: string) { return value.replace(/&amp;/g, '&').replace(/&#39;|&apos;/g, "'").replace(/&nbsp;/g, ' ').replace(/&ndash;/g, '–').replace(/&mdash;/g, '—').replace(/&#(\d+);/g, (_, n: string) => String.fromCodePoint(Number(n))).trim(); }
 
 export function parseFedCalendar(html: string, now = new Date(), horizonDays = HORIZON_DAYS): EconomicCalendarEvent[] {
   if (html.length > 2_000_000 || !/<html\b/i.test(html)) return [];
@@ -124,8 +154,8 @@ export function parseFedCalendar(html: string, now = new Date(), horizonDays = H
 }
 
 export async function loadOfficialEconomicCalendar(fetcher: typeof fetch = fetch, now = new Date()): Promise<{ events: EconomicCalendarEvent[]; unavailableSources: string[] }> {
+  const bls = await loadBlsEvents(fetcher, now);
   const sources = [
-    { name: 'U.S. Bureau of Labor Statistics calendar', url: BLS_ICS_URL, parse: (body: string) => parseBlsCalendar(body, now) },
     { name: 'Federal Reserve FOMC calendar', url: FED_CALENDAR_URL, parse: (body: string) => parseFedCalendar(body, now) },
   ];
   const results = await Promise.all(sources.map(async (source) => {
@@ -136,6 +166,36 @@ export async function loadOfficialEconomicCalendar(fetcher: typeof fetch = fetch
       return { source, events: source.parse(body) };
     } catch { return { source, events: null }; }
   }));
-  const events = results.flatMap((result) => result.events || []).sort((a, b) => (a.startsAt || a.endsAt || '').localeCompare(b.startsAt || b.endsAt || '')).slice(0, 100);
-  return { events, unavailableSources: results.filter((result) => result.events === null).map((result) => result.source.name) };
+  const events = [...bls.events, ...results.flatMap((result) => result.events || [])].sort((a, b) => (a.startsAt || a.endsAt || a.eventDate).localeCompare(b.startsAt || b.endsAt || b.eventDate)).slice(0, 100);
+  return { events, unavailableSources: [...(bls.available ? [] : ['U.S. Bureau of Labor Statistics calendar']), ...results.filter((result) => result.events === null).map((result) => result.source.name)] };
+}
+
+async function loadBlsEvents(fetcher: typeof fetch, now: Date) {
+  try {
+    const response = await fetcher(BLS_ICS_URL, { headers: { Accept: 'text/calendar, text/html;q=0.9, */*;q=0.8', 'User-Agent': 'Mozilla/5.0 (compatible; ProjectOrion/1.0)' }, signal: AbortSignal.timeout(12_000), next: { revalidate: 900 } });
+    if (response.ok) {
+      const body = await response.text();
+      const events = parseBlsCalendar(body, now);
+      if (events.length) return { events, available: true };
+    }
+  } catch { /* try the official month schedule pages below */ }
+
+  const horizon = new Date(now.getTime() + HORIZON_DAYS * 86_400_000);
+  const months: Array<{ year: number; month: number }> = [];
+  const cursor = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  while (cursor <= horizon) {
+    months.push({ year: cursor.getUTCFullYear(), month: cursor.getUTCMonth() + 1 });
+    cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+  }
+  const pages = await Promise.all(months.map(async ({ year, month }) => {
+    const url = `${BLS_SCHEDULE_URL}${year}/${String(month).padStart(2, '0')}_sched_list.htm`;
+    try {
+      const response = await fetcher(url, { headers: { Accept: 'text/html', 'User-Agent': 'Mozilla/5.0 (compatible; ProjectOrion/1.0)' }, signal: AbortSignal.timeout(12_000), next: { revalidate: 900 } });
+      if (!response.ok) return null;
+      const html = await response.text();
+      return { url, events: parseBlsScheduleList(html, url, now) };
+    } catch { return null; }
+  }));
+  const availablePages = pages.filter((page): page is NonNullable<typeof page> => page !== null);
+  return { events: availablePages.flatMap((page) => page.events), available: availablePages.length > 0 };
 }

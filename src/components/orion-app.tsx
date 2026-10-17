@@ -24,7 +24,7 @@ type Mode = 'general' | 'trading-coach' | 'chart-analysis' | 'journal-review';
 type ProviderId = 'gemini' | 'openrouter' | 'openai-compatible' | 'deepseek-compatible';
 type ProviderInfo = { configured: boolean; model?: string | null; paidUseEnabled?: boolean; message?: string };
 type ModelOption = { id: string; name: string; free: boolean | null; contextLength: number | null; supportsImages: boolean };
-type SMCResponse = { analysis: SMCAssessment; source: string; lastSuccessfulUpdate: string; candles: { daily: OHLCV[]; fourHour: OHLCV[]; oneHour: OHLCV[]; thirtyMinute: OHLCV[] }; strategyProfile?: { id:string; name:string; version:number; settings:{swingLeft:number;swingRight:number} }; engineVersion?:string; savedAnalysisId?:string|null; historyWarning?:string|null };
+type SMCResponse = { analysis: SMCAssessment; source: string; lastSuccessfulUpdate: string; candles: { daily: OHLCV[]; fourHour: OHLCV[]; oneHour: OHLCV[]; thirtyMinute: OHLCV[] }; strategyProfile?: { id?:string; name:string; version:number; settings?:{swingLeft:number;swingRight:number} }; engineVersion?:string; savedAnalysisId?:string|null; historyWarning?:string|null };
 const nav = [
   { title: 'Workspace', items: [{ name: 'Home', icon: LayoutDashboard }, { name: 'AI Chat', icon: MessageSquare }, { name: 'Voice Orion', icon: Mic }, { name: 'Markets', icon: TrendingUp }, { name: 'Forex Reference', icon: Globe2 }, { name: 'SMC Scanner', icon: Search }, { name: 'Chart Analyzer', icon: BarChart3 }, { name: 'Strategy Settings', icon: Settings2 }, { name: 'Trading Tools', icon: Compass }] },
   { title: 'Review', items: [{ name: 'News & Sessions', icon: Globe2 }, { name: 'Market Outlook', icon: Activity }, { name: 'Trading Journal', icon: FileText }, { name: 'Analytics', icon: Activity }, { name: 'Lessons & Memory', icon: BrainCircuit }] },
@@ -491,11 +491,11 @@ export default function OrionApp() {
         for (const line of lines) { if (line.startsWith('event:')) eventName = line.slice(6).trim(); else if (line.startsWith('data:')) dataText += line.slice(5).trim(); }
         if (!dataText) return;
         try {
-          const payload = JSON.parse(dataText) as { text?: string; message?: string; analysis?: SMCAssessment; source?: string; lastSuccessfulUpdate?: string; candles?:SMCResponse['candles'] };
+          const payload = JSON.parse(dataText) as { text?: string; message?: string; analysis?: SMCAssessment; source?: string; lastSuccessfulUpdate?: string; candles?:SMCResponse['candles']; strategyProfile?: { name:string; version:number } };
           if (eventName === 'delta' && typeof payload.text === 'string') {
             setMessages((items) => { const next = [...items]; const last = next[next.length - 1]; if (last?.role === 'assistant') next[next.length - 1] = { ...last, text: last.text + payload.text, status: 'loading' }; return next; });
           } else if (eventName === 'smc-result' && payload.analysis) {
-            if(payload.candles)setChatSmcResult({ analysis: payload.analysis, candles:payload.candles, source: payload.source || 'Bybit V5 public REST', lastSuccessfulUpdate: payload.lastSuccessfulUpdate || '' });
+            if(payload.candles)setChatSmcResult({ analysis: payload.analysis, candles:payload.candles, source: payload.source || 'Bybit V5 public REST', lastSuccessfulUpdate: payload.lastSuccessfulUpdate || '', strategyProfile: payload.strategyProfile ? { id:'selected', ...payload.strategyProfile } : undefined });
           } else if (eventName === 'error') streamError = payload.message || 'The selected provider could not complete this response.';
         } catch { streamError = 'The server returned malformed stream data. Try again.'; }
       };

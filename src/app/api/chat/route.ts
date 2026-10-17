@@ -5,7 +5,7 @@ import { createProvider, ProviderError, type ProviderMessage } from '@/lib/ai/pr
 import { createSupabaseServerClient, supabaseConfiguration } from '@/lib/supabase/server';
 import { BybitPublicMarketData, MarketDataError } from '@/lib/market/bybit';
 import { analyzeFromMarketData } from '@/lib/smc/market-analysis';
-import { DEFAULT_STRATEGY_PROFILE, settingsToEngineOptions } from '@/lib/smc/strategy-profile';
+import { DEFAULT_STRATEGY_PROFILE, resolveStrategyProfileRow, settingsToEngineOptions } from '@/lib/smc/strategy-profile';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -15,7 +15,7 @@ function jsonError(status: number, error: string, message: string) {
   return NextResponse.json({ error, message }, { status });
 }
 
-function smcProviderContext(result: NonNullable<Awaited<ReturnType<typeof analyzeFromMarketData>>>) {
+function smcProviderContext(result: NonNullable<Awaited<ReturnType<typeof analyzeFromMarketData>>>, profile: typeof DEFAULT_STRATEGY_PROFILE) {
   const analysis = result.analysis;
   const reduceTimeframe = (item: typeof analysis.structure) => ({
     timeframe: item.timeframe, structure: item.structure, lastCandleTimestamp: item.lastCandleTimestamp, lastCandleClosed: item.lastCandleClosed, dataQuality: item.dataQuality,
@@ -23,6 +23,7 @@ function smcProviderContext(result: NonNullable<Awaited<ReturnType<typeof analyz
   });
   return {
     source: result.source, lastSuccessfulUpdate: result.lastSuccessfulUpdate,
+    strategyProfile: { name: profile.name, version: profile.version, settings: profile.settings },
     analysis: {
       symbol: analysis.symbol, timeframe: analysis.timeframe, analysisTimestamp: analysis.analysisTimestamp, state: analysis.state,
       higherTimeframeBias: analysis.higherTimeframeBias, dailyBias: analysis.dailyBias, fourHourBias: analysis.fourHourBias, lowerTimeframeStructure: analysis.lowerTimeframeStructure,
@@ -62,14 +63,22 @@ export async function POST(request: Request) {
   if (conversationError || !conversation) return jsonError(404, 'conversation_not_found', 'Conversation not found.');
   let smcResult: Awaited<ReturnType<typeof analyzeFromMarketData>> | null = null;
   let savedSmcAnalysisId: string | null = null;
+  let strategyProfile = DEFAULT_STRATEGY_PROFILE;
   if (input.smcRequest) {
-    try { smcResult = await analyzeFromMarketData(marketData, input.smcRequest, settingsToEngineOptions(DEFAULT_STRATEGY_PROFILE.settings)); }
+    const { data: profiles, error: profileError } = await supabase.from('strategy_profiles').select('id,name,version,settings').eq('user_id', user.id).eq('is_selected', true).limit(1);
+    if (profileError) return jsonError(503, 'strategy_profile_unavailable', 'Could not load your selected strategy. Apply the latest Supabase migration or retry.');
+    if (profiles?.[0]) {
+      const resolved = resolveStrategyProfileRow(profiles[0]);
+      if (!resolved.ok) return jsonError(422, 'invalid_strategy_profile', 'Your selected strategy has invalid settings. Edit or select a valid profile before analyzing.');
+      strategyProfile = resolved.profile;
+    }
+    try { smcResult = await analyzeFromMarketData(marketData, input.smcRequest, settingsToEngineOptions(strategyProfile.settings)); }
     catch (error) {
       const failure = error instanceof MarketDataError ? error : new MarketDataError('Could not run the SMC tool with verified market data.');
       return jsonError(failure.status, failure.code, failure.message);
     }
     const quality={assessment:smcResult.analysis.dataQuality,timeframes:{daily:smcResult.analysis.higherTimeframes.daily.dataQuality,fourHour:smcResult.analysis.higherTimeframes.fourHour.dataQuality,lower:smcResult.analysis.structure.dataQuality},candleCounts:Object.fromEntries(Object.entries(smcResult.candles).map(([key,series])=>[key,series.length]))};
-    const { data: savedAnalysis } = await supabase.from('smc_analyses').insert({ user_id:user.id, symbol:input.smcRequest.symbol, market_category:input.smcRequest.category, timeframe:input.smcRequest.timeframe, analysis_timestamp:new Date(smcResult.analysis.analysisTimestamp).toISOString(), last_market_update:smcResult.lastSuccessfulUpdate, candle_snapshot:smcResult.candles, data_quality:quality, strategy_profile_id:null, strategy_name:DEFAULT_STRATEGY_PROFILE.name, strategy_version:DEFAULT_STRATEGY_PROFILE.version, strategy_settings:DEFAULT_STRATEGY_PROFILE.settings, engine_version:'orion-smc-1.1.0', findings:smcResult.analysis }).select('id').single();
+    const { data: savedAnalysis } = await supabase.from('smc_analyses').insert({ user_id:user.id, symbol:input.smcRequest.symbol, market_category:input.smcRequest.category, timeframe:input.smcRequest.timeframe, analysis_timestamp:new Date(smcResult.analysis.analysisTimestamp).toISOString(), last_market_update:smcResult.lastSuccessfulUpdate, candle_snapshot:smcResult.candles, data_quality:quality, strategy_profile_id:strategyProfile.id === DEFAULT_STRATEGY_PROFILE.id ? null : strategyProfile.id, strategy_name:strategyProfile.name, strategy_version:strategyProfile.version, strategy_settings:strategyProfile.settings, engine_version:'orion-smc-1.1.0', findings:smcResult.analysis }).select('id').single();
     if (savedAnalysis) savedSmcAnalysisId=savedAnalysis.id;
   }
   const { data: previousMessages, error: historyError } = await supabase.from('messages').select('role,content').eq('conversation_id', input.conversationId).eq('user_id', user.id).order('created_at', { ascending: true }).limit(80);
@@ -88,7 +97,7 @@ export async function POST(request: Request) {
     : [...(previousMessages || []).map((message) => ({ role: message.role as ProviderMessage['role'], content: message.content })), { role: 'user', content: input.message }];
   if (smcResult) {
     const lastUserIndex = history.map((message) => message.role).lastIndexOf('user');
-    if (lastUserIndex >= 0) history[lastUserIndex] = { ...history[lastUserIndex], content: `${history[lastUserIndex].content}\n\n[Verified deterministic SMC tool result from Bybit V5. Treat every calculated price level and state below as fixed engine output: do not alter, recalculate, or replace levels. Explain the rule evidence and call out missing confirmations. If data quality is invalid or stale, say no reliable setup conclusion can be made.]\n${JSON.stringify(smcProviderContext(smcResult))}` };
+    if (lastUserIndex >= 0) history[lastUserIndex] = { ...history[lastUserIndex], content: `${history[lastUserIndex].content}\n\n[Verified deterministic SMC tool result from Bybit V5. The attached profile is the user's selected strategy and was used to calculate this result. Treat every calculated price level and state below as fixed engine output: do not alter, recalculate, or replace levels. Explain the rule evidence and call out missing confirmations. If data quality is invalid or stale, say no reliable setup conclusion can be made.]\n${JSON.stringify(smcProviderContext(smcResult, strategyProfile))}` };
   }
   if (input.image) {
     const lastUserIndex = history.map((message) => message.role).lastIndexOf('user');
@@ -123,7 +132,7 @@ export async function POST(request: Request) {
     async start(streamController) {
       let assistantText = '';
       try {
-        if (smcResult) streamController.enqueue(encoder.encode(`event: smc-result\ndata: ${JSON.stringify({ source: smcResult.source, lastSuccessfulUpdate: smcResult.lastSuccessfulUpdate, analysis: smcResult.analysis, candles: smcResult.candles })}\n\n`));
+        if (smcResult) streamController.enqueue(encoder.encode(`event: smc-result\ndata: ${JSON.stringify({ source: smcResult.source, lastSuccessfulUpdate: smcResult.lastSuccessfulUpdate, analysis: smcResult.analysis, candles: smcResult.candles, strategyProfile: { name: strategyProfile.name, version: strategyProfile.version } })}\n\n`));
         for await (const chunk of stream) {
           if (controller.signal.aborted) break;
           assistantText += chunk;

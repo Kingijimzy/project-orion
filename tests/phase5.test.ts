@@ -1,6 +1,6 @@
 import { it } from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_STRATEGY_PROFILE, validateStrategySettings, describeStrategySettings, settingsToEngineOptions } from '../src/lib/smc/strategy-profile';
+import { DEFAULT_STRATEGY_PROFILE, validateStrategySettings, describeStrategySettings, settingsToEngineOptions, resolveStrategyProfileRow } from '../src/lib/smc/strategy-profile';
 import { analyzeTimeframe } from '../src/lib/smc/engine';
 import { filterChartAnnotations, mapSMCAnnotations } from '../src/lib/smc/chart-annotations';
 import { breakEvenPrice, cryptoNotional, cryptoQuantity, estimatedTradingCosts, forexPipDistance, forexPipValue, positionSize, rewardRisk, riskAmount, riskPercent, tradeExpectancyR } from '../src/lib/trading/calculators';
@@ -15,6 +15,15 @@ it('validates strategy profiles and describes the actual baseline rules',()=>{
   assert.equal(validateStrategySettings({...DEFAULT_STRATEGY_PROFILE.settings,swingLeft:0}).ok,false);
   const description=describeStrategySettings(DEFAULT_STRATEGY_PROFILE.settings).join(' ');
   assert.match(description,/2 bars right/); assert.match(description,/confirmed close-based break/);
+});
+
+it('resolves a selected strategy profile record and rejects invalid identity or settings',()=>{
+  const row={id:'profile-1',name:'My rules',version:3,settings:structuredClone(DEFAULT_STRATEGY_PROFILE.settings)};
+  const resolved=resolveStrategyProfileRow(row);
+  assert.equal(resolved.ok,true);
+  if(resolved.ok){assert.equal(resolved.profile.name,'My rules');assert.equal(resolved.profile.version,3);assert.deepEqual(resolved.profile.settings,row.settings);}
+  assert.equal(resolveStrategyProfileRow({...row,version:0}).ok,false);
+  assert.equal(resolveStrategyProfileRow({...row,settings:{...row.settings,swingRight:0}}).ok,false);
 });
 
 it('reproduces deterministic analysis with the same closed candle snapshot and profile version',()=>{
