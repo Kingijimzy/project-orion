@@ -12,6 +12,18 @@ export const DEFAULT_STRATEGY_PROFILE: StrategyProfile = {
   id: 'orion-baseline', name: 'Orion Baseline', version: 1, isDefault: true,
   settings: { swingLeft: 2, swingRight: 2, equalTolerancePct: 0.001, breakMethod: 'close', fvg: { enabled: true, minimumGapPct: 0, fillMethod: 'wick' }, orderBlock: { enabled: true, lookback: 5, minimumDisplacementBodyRatio: 0.6, zone: 'full-candle', mitigation: 'touch', invalidation: 'close' }, multiTimeframe: { requireDailyFourHourAlignment: true, requireLowerTimeframeAlignment: true, requireSweep: true, requireStructureBreak: true, requireZoneRetest: true, maximumCandidateBars: 30 }, minimumConfluence: 3 },
 };
+
+export function resolveStrategyProfileRow(value: unknown): { ok: true; profile: StrategyProfile } | { ok: false; error: string } {
+  if (!value || typeof value !== 'object') return { ok: false, error: 'Selected profile is not a valid record.' };
+  const row = value as Record<string, unknown>;
+  if (typeof row.id !== 'string' || typeof row.name !== 'string' || !Number.isInteger(row.version) || Number(row.version) < 1) {
+    return { ok: false, error: 'Selected profile is missing its identity or version.' };
+  }
+  const validation = validateStrategySettings(row.settings);
+  if (!validation.ok) return { ok: false, error: validation.error };
+  return { ok: true, profile: { id: row.id, name: row.name, version: Number(row.version), settings: validation.settings } };
+}
+
 export function validateStrategySettings(value: unknown): { ok: true; settings: StrategySettings } | { ok: false; error: string } {
   if (!value || typeof value !== 'object') return { ok: false, error: 'Settings must be an object.' };
   const x = value as StrategySettings;

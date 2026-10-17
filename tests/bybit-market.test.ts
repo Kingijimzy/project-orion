@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { BybitPublicMarketData, MarketDataError, clearBybitCachesForTests, parseBybitCandles, parseBybitSymbols } from '../src/lib/market/bybit';
+import { BybitPublicMarketData, MarketDataError, clearBybitCachesForTests, parseBybitCandles, parseBybitSymbols, parseBybitTicker } from '../src/lib/market/bybit';
 
 const now = Date.UTC(2026, 0, 1, 12, 37);
 const candle = (start: number, open = '100', high = '110', low = '90', close = '105') => [String(start), open, high, low, close, '12.5', '1200'];
@@ -55,5 +55,34 @@ describe('Bybit market data', () => {
       { symbol: 'bad!', status: 'Trading', baseCoin: 'bad', quoteCoin: 'USDT' },
     ] } }, 'linear');
     assert.deepEqual(symbols.map((item) => item.symbol), ['BTCUSDT']);
+  });
+
+  it('parses public ticker price, signed 24-hour change, and optional daily values', () => {
+    const result = parseBybitTicker({ retCode: 0, result: { list: [{ symbol: 'BTCUSDT', lastPrice: '65000.5', price24hPcnt: '-0.0125', highPrice24h: '66000', lowPrice24h: '64000', volume24h: '123', turnover24h: '8000000' }] } }, 'linear', 'BTCUSDT', now);
+    assert.equal(result.lastPrice, 65000.5);
+    assert.equal(result.change24h, -0.0125);
+    assert.equal(result.high24h, 66000);
+    assert.equal(result.source, 'Bybit V5 public REST');
+    assert.equal(parseBybitTicker({ retCode: 0, result: { list: [{ symbol: 'BTCUSDT', lastPrice: '65000' }] } }, 'linear', 'BTCUSDT', now).change24h, null);
+  });
+
+  it('rejects malformed ticker values and handles ticker rate limits', () => {
+    assert.throws(() => parseBybitTicker({ retCode: 0, result: { list: [{ symbol: 'ETHUSDT', lastPrice: '100' }] } }, 'linear', 'BTCUSDT', now), (error) => error instanceof MarketDataError && error.code === 'invalid_ticker');
+    assert.throws(() => parseBybitTicker({ retCode: 0, result: { list: [{ symbol: 'BTCUSDT', lastPrice: 'NaN' }] } }, 'linear', 'BTCUSDT', now), (error) => error instanceof MarketDataError && error.code === 'invalid_ticker');
+    assert.throws(() => parseBybitTicker({ retCode: 10006 }, 'linear', 'BTCUSDT', now), (error) => error instanceof MarketDataError && error.status === 429);
+  });
+
+  it('uses the public V5 ticker endpoint and caches repeated requests briefly', async () => {
+    clearBybitCachesForTests();
+    let calls = 0;
+    const fetcher: typeof fetch = async (input) => {
+      calls += 1; const url = new URL(String(input));
+      assert.equal(url.pathname, '/v5/market/tickers'); assert.equal(url.searchParams.get('symbol'), 'BTCUSDT');
+      return Response.json({ retCode: 0, result: { list: [{ symbol: 'BTCUSDT', lastPrice: '65000', price24hPcnt: '0.01' }] } });
+    };
+    const service = new BybitPublicMarketData(fetcher, () => now);
+    const first = await service.getTicker('linear', 'BTCUSDT');
+    const second = await service.getTicker('linear', 'BTCUSDT');
+    assert.equal(calls, 1); assert.equal(first.lastPrice, 65000); assert.equal(first.updatedAt, second.updatedAt);
   });
 });

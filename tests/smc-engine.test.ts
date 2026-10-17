@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { alignHigherTimeframeCandles, analyzeMultiTimeframe, analyzeTimeframe, type OHLCV, validateCandles } from '../src/lib/smc/engine';
+import { DEFAULT_STRATEGY_PROFILE } from '../src/lib/smc/strategy-profile';
 
 const minute = 60_000;
 const base = Date.UTC(2026, 0, 1);
@@ -151,6 +152,24 @@ describe('deterministic SMC engine', () => {
     assert.equal(aligned[1].higherCandleTimestamp, day0);
     assert.equal(aligned[1].higherCandleClosed, true);
     assert.equal(day1, lower[1].timestamp);
+  });
+
+  it('replaying at an as-of time ignores candles after the cutoff when judging expiry', () => {
+    const step = 3_600_000;
+    const gen = (start: number, duration: number, count: number): OHLCV[] => Array.from({ length: count }, (_, i) => { const mid = 10 + Math.sin(i / 2) * 2; const open = mid - 0.2, close = mid + 0.2; return { timestamp: start + i * duration, open, high: Math.max(open, close) + 0.4, low: Math.min(open, close) - 0.4, close, volume: 1, closed: true }; });
+    const settings = { ...DEFAULT_STRATEGY_PROFILE.settings, minimumConfluence: 0, multiTimeframe: { requireDailyFourHourAlignment: false, requireLowerTimeframeAlignment: false, requireSweep: false, requireStructureBreak: false, requireZoneRetest: false, maximumCandidateBars: 30 } };
+    const options = { swingLeft: 1, swingRight: 1, maxDataAgeMs: 10 * step, strategy: settings };
+    const candles = { daily: gen(base, 86_400_000, 40), fourHour: gen(base, 4 * step, 80), oneHour: gen(base, step, 200), thirtyMinute: gen(base, 30 * minute, 200) };
+    const asOf = candles.oneHour[150].timestamp;
+    const atCutoff = analyzeMultiTimeframe({ symbol: 'BTCUSDT', timeframe: '60', candles, options: { ...options, asOfTimestamp: asOf } });
+    const withTrailing = analyzeMultiTimeframe({
+      symbol: 'BTCUSDT', timeframe: '60', options: { ...options, asOfTimestamp: asOf },
+      candles: { ...candles, oneHour: [...candles.oneHour, ...gen(candles.oneHour.at(-1)!.timestamp + step, step, 300)], thirtyMinute: [...candles.thirtyMinute, ...gen(candles.thirtyMinute.at(-1)!.timestamp + 30 * minute, 30 * minute, 300)] },
+    });
+    assert.equal(withTrailing.structure.lastCandleTimestamp, asOf - step);
+    assert.equal(withTrailing.structure.lastCandleTimestamp, atCutoff.structure.lastCandleTimestamp);
+    assert.equal(withTrailing.state, atCutoff.state);
+    assert.notEqual(withTrailing.state, 'Expired');
   });
 
   it('returns a structured multi-timeframe assessment and blocks qualification on stale inputs', () => {

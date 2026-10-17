@@ -1,5 +1,6 @@
 export type AssistantMode = 'general' | 'trading-coach' | 'chart-analysis' | 'journal-review';
-export type ProviderMessage = { role: 'user' | 'assistant'; content: string };
+export type ProviderMessagePart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
+export type ProviderMessage = { role: 'user' | 'assistant'; content: string | ProviderMessagePart[] };
 export type ProviderConfig = { model: string; apiKey: string; allowPaid: boolean };
 
 /** Models verified against Google's published Standard Free Tier pricing on 2026-10-13. */
@@ -77,7 +78,10 @@ export class GeminiProvider implements ChatProvider {
   constructor(private readonly config: ProviderConfig, private readonly fetcher: typeof fetch = fetch) {}
 
   async *stream(messages: ProviderMessage[], mode: AssistantMode, signal: AbortSignal): AsyncIterable<string> {
-    const contents = messages.map((message) => ({ role: message.role === 'assistant' ? 'model' : 'user', parts: [{ text: message.content }] }));
+    if (messages.some((message) => typeof message.content !== 'string')) {
+      throw new ProviderError('Gemini image input is not enabled in Orion. Select a verified OpenRouter vision model.', undefined, 'image_model_unavailable');
+    }
+    const contents = messages.map((message) => ({ role: message.role === 'assistant' ? 'model' : 'user', parts: [{ text: message.content as string }] }));
     let response: Response;
     try {
       response = await this.fetcher(geminiEndpoint(this.config.model), {
@@ -199,7 +203,7 @@ export class OpenRouterProvider implements ChatProvider {
   }
 }
 
-export async function createProvider(id: string, model: string, env: NodeJS.ProcessEnv = process.env): Promise<ChatProvider> {
+export async function createProvider(id: string, model: string, env: NodeJS.ProcessEnv = process.env, options: { requireImageInput?: boolean } = {}): Promise<ChatProvider> {
   if (id === 'gemini') {
     const config = geminiConfiguration(env);
     if (!config) throw new ProviderError('Gemini is not ready. Configure GEMINI_API_KEY and GEMINI_MODEL. With paid access disabled, only a model verified for the free tier is allowed.', undefined, 'provider_not_configured');
@@ -208,7 +212,10 @@ export async function createProvider(id: string, model: string, env: NodeJS.Proc
   }
   if (id === 'openrouter') {
     const { resolveOpenRouterModel } = await import('./openrouter');
-    await resolveOpenRouterModel(model, env);
+    const selected = await resolveOpenRouterModel(model, env);
+    if (options.requireImageInput && !selected.inputModalities.includes('image')) {
+      throw new ProviderError('The selected OpenRouter model cannot inspect images. Choose a catalogue-listed model with image input.', undefined, 'image_model_unavailable');
+    }
     const apiKey = env.OPENROUTER_API_KEY?.trim();
     if (!apiKey) throw new ProviderError('OpenRouter is not configured. Set OPENROUTER_API_KEY on the server.', undefined, 'provider_not_configured');
     return new OpenRouterProvider(apiKey, model);
