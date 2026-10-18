@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { MarketDataRegistry, TwelveDataForexProvider } from '../src/lib/market/provider';
-import { analyzeInstrument } from '../src/lib/smc/instrument-analysis';
+import { analyzeInstrument, loadInstrumentCandles, resolveInstrumentOrThrow } from '../src/lib/smc/instrument-analysis';
 
 const NOW = Date.UTC(2026, 0, 13);
 const STEP_MINUTES: Record<string, number> = { '1day': 1440, '4h': 240, '1h': 60, '30min': 30 };
@@ -37,5 +37,28 @@ describe('provider-neutral SMC analysis', () => {
   it('rejects an unknown instrument instead of inventing a series', async () => {
     const registry = new MarketDataRegistry([new TwelveDataForexProvider('test-key', forexFetch(), () => NOW)]);
     await assert.rejects(analyzeInstrument(registry, { symbol: '!!!', timeframe: '60' }), /recognise that instrument/i);
+  });
+
+  it('loads custom per-frame limits through the neutral layer for backtests', async () => {
+    const registry = new MarketDataRegistry([new TwelveDataForexProvider('test-key', forexFetch(), () => NOW)]);
+    const loaded = await loadInstrumentCandles(registry, resolveInstrumentOrThrow('eur/usd'), { daily: 400, fourHour: 400, oneHour: 800, thirtyMinute: 400 });
+    assert.equal(loaded.candles.daily.length, 400);
+    assert.equal(loaded.candles.fourHour.length, 400);
+    assert.equal(loaded.candles.oneHour.length, 800);
+    assert.equal(loaded.candles.thirtyMinute.length, 400);
+    assert.equal(loaded.source, 'Twelve Data REST');
+    assert.equal(loaded.stale, false);
+    assert.ok(loaded.lastSuccessfulUpdate);
+  });
+
+  it('resolves crypto and forex through one boundary and rejects unknown symbols', () => {
+    const crypto = resolveInstrumentOrThrow('btcusdt', 'linear');
+    assert.equal(crypto.assetClass, 'crypto');
+    assert.equal(crypto.provider, 'bybit');
+    assert.equal(crypto.symbol, 'BTCUSDT');
+    const forex = resolveInstrumentOrThrow('gbp/usd');
+    assert.equal(forex.assetClass, 'forex');
+    assert.equal(forex.provider, 'twelve-data');
+    assert.throws(() => resolveInstrumentOrThrow('!!!'), /recognise that instrument/i);
   });
 });

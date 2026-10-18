@@ -3,6 +3,7 @@
 import { FormEvent, useMemo, useState } from 'react';
 import { ExternalLink, LoaderCircle, Search } from 'lucide-react';
 import type { BybitCategory } from '@/lib/market/bybit';
+import { FOREX_PAIRS } from '@/lib/market/twelve-data-forex';
 import type { OHLCV, SMCAssessment } from '@/lib/smc/engine';
 import { buildScenarios } from '@/lib/smc/scenarios';
 import type { OfficialNewsItem } from '@/lib/news/official-feeds';
@@ -27,7 +28,9 @@ type BacktestResult = {
 };
 
 export function MarketOutlookPage() {
+  const [assetClass, setAssetClass] = useState<'crypto' | 'forex'>('crypto');
   const [symbol, setSymbol] = useState('BTCUSDT');
+  const [forexPair, setForexPair] = useState<string>(FOREX_PAIRS[0]);
   const [category, setCategory] = useState<BybitCategory>('linear');
   const [timeframe, setTimeframe] = useState<'30' | '60'>('60');
   const [result, setResult] = useState<OutlookResult | null>(null);
@@ -49,13 +52,14 @@ export function MarketOutlookPage() {
 
   async function analyze(event?: FormEvent) {
     event?.preventDefault(); setBusy(true); setError(''); setNewsWarning(''); setBacktestWarning(''); setBacktest(null);
+    const requestBody = assetClass === 'forex' ? { symbol: forexPair, timeframe } : { symbol, category, timeframe };
     try {
-      const marketResponse = await fetch('/api/smc/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbol, category, timeframe }) });
+      const marketResponse = await fetch('/api/smc/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(requestBody) });
       const market = await marketResponse.json() as OutlookResult & { message?: string };
       if (!marketResponse.ok) throw new Error(market.message || 'Bybit market analysis is unavailable.');
       setResult(market);
       try {
-        const backtestResponse = await fetch('/api/smc/backtest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ symbol, category, timeframe }) });
+        const backtestResponse = await fetch('/api/smc/backtest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(requestBody) });
         const baseRate = await backtestResponse.json() as BacktestResult & { message?: string };
         if (backtestResponse.ok) setBacktest(baseRate);
         else setBacktestWarning(baseRate.message || 'Historical base rate is unavailable.');
@@ -72,8 +76,8 @@ export function MarketOutlookPage() {
 
   const assessment = result?.analysis;
   return <div className="outlook-page">
-    <div className="market-heading"><div><div className="eyebrow"><span className="green-pip"/> EVIDENCE SUMMARY · NO PREDICTION</div><h1>Market outlook</h1><p>Deterministic Bybit SMC findings with separate official U.S. release headlines.</p></div></div>
-    <form className="smc-query outlook-query" onSubmit={analyze}><label>CRYPTO SYMBOL<input value={symbol} onChange={(event) => setSymbol(event.target.value.toUpperCase())} required maxLength={30}/></label><label>BYBIT MARKET<select value={category} onChange={(event) => setCategory(event.target.value as BybitCategory)}><option value="linear">Linear contracts</option><option value="spot">Spot</option><option value="inverse">Inverse contracts</option></select></label><label>ENTRY TIMEFRAME<select value={timeframe} onChange={(event) => setTimeframe(event.target.value as '30' | '60')}><option value="60">1H</option><option value="30">30M</option></select></label><button className="market-refresh" type="submit" disabled={busy}>{busy ? <><LoaderCircle size={14} className="spin"/> Building…</> : <><Search size={14}/> Build evidence</>}</button></form>
+    <div className="market-heading"><div><div className="eyebrow"><span className="green-pip"/> EVIDENCE SUMMARY · NO PREDICTION</div><h1>Market outlook</h1><p>Deterministic crypto and forex SMC findings with separate official U.S. release headlines.</p></div></div>
+    <form className="smc-query outlook-query" onSubmit={analyze}><label>INSTRUMENT<select value={assetClass} onChange={(event) => { const next = event.target.value as 'crypto' | 'forex'; setAssetClass(next); setResult(null); setBacktest(null); setError(''); }}><option value="crypto">Crypto (Bybit)</option><option value="forex">Forex (Twelve Data)</option></select></label>{assetClass === 'forex' ? <label>FOREX PAIR<select value={forexPair} onChange={(event) => setForexPair(event.target.value)}>{FOREX_PAIRS.map((pair) => <option key={pair} value={pair}>{pair}</option>)}</select></label> : <><label>CRYPTO SYMBOL<input value={symbol} onChange={(event) => setSymbol(event.target.value.toUpperCase())} required maxLength={30}/></label><label>BYBIT MARKET<select value={category} onChange={(event) => setCategory(event.target.value as BybitCategory)}><option value="linear">Linear contracts</option><option value="spot">Spot</option><option value="inverse">Inverse contracts</option></select></label></>}<label>ENTRY TIMEFRAME<select value={timeframe} onChange={(event) => setTimeframe(event.target.value as '30' | '60')}><option value="60">1H</option><option value="30">30M</option></select></label><button className="market-refresh" type="submit" disabled={busy}>{busy ? <><LoaderCircle size={14} className="spin"/> Building…</> : <><Search size={14}/> Build evidence</>}</button></form>
     <p className="smc-timeframe-note">Analysis combines Daily and 4H context with closed 1H/30M candles. News is shown as sourced macro context and is not automatically scored as bullish or bearish for this instrument.</p>
     {error && <div className="inline-error market-error" role="alert">{error} <button onClick={() => void analyze()}>Retry</button></div>}
     {!assessment && !busy && !error && <div className="smc-empty"><b>Build a current evidence summary</b><span>Orion will show a directional state only when the deterministic rules and data quality support one.</span></div>}

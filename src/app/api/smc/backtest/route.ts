@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 import { readLimitedJson } from '@/lib/api/read-json';
-import { BybitPublicMarketData, isBybitCategory, MarketDataError, type CandleResult } from '@/lib/market/bybit';
+import { BybitPublicMarketData, isBybitCategory, MarketDataError, type BybitCategory, type CandleResult } from '@/lib/market/bybit';
+import { resolveInstrument } from '@/lib/market/instrument';
+import { createDefaultMarketDataRegistry } from '@/lib/market/provider';
+import { loadInstrumentCandles } from '@/lib/smc/instrument-analysis';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { DEFAULT_STRATEGY_PROFILE, settingsToEngineOptions, validateStrategySettings, type StrategyProfile } from '@/lib/smc/strategy-profile';
 import { runBacktest, type BacktestReport } from '@/lib/smc/backtest';
@@ -10,6 +13,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 const marketData = new BybitPublicMarketData();
+const marketRegistry = createDefaultMarketDataRegistry();
 
 type CacheItem = { expires: number; report: BacktestReport; profile: StrategyProfile; lastSuccessfulUpdate: string };
 const cache = new Map<string, CacheItem>();
@@ -21,12 +25,17 @@ export async function POST(request: Request) {
   const parsed = await readLimitedJson(request);
   if (!parsed.ok) return NextResponse.json({ error: 'invalid_request', message: 'Send a valid JSON backtest request.' }, { status: parsed.reason === 'too_large' ? 413 : 400 });
   const body = parsed.value && typeof parsed.value === 'object' ? parsed.value as Record<string, unknown> : {};
-  const symbol = typeof body.symbol === 'string' ? body.symbol.trim().toUpperCase() : '';
-  const category = body.category === undefined ? 'linear' : body.category;
-  const timeframe = body.timeframe === undefined ? '60' : body.timeframe;
-  if (!/^[A-Z0-9]{2,30}$/.test(symbol) || typeof category !== 'string' || !isBybitCategory(category) || (timeframe !== '30' && timeframe !== '60')) {
-    return NextResponse.json({ error: 'invalid_request', message: 'Choose a valid Bybit category, symbol, and 30m or 1H confirmation timeframe.' }, { status: 400 });
+  const rawSymbol = typeof body.symbol === 'string' ? body.symbol.trim().toUpperCase() : '';
+  const requestedCategory = body.category === undefined ? 'linear' : body.category;
+  const category: BybitCategory | null = typeof requestedCategory === 'string' && isBybitCategory(requestedCategory) ? requestedCategory : null;
+  const timeframe: '30' | '60' | null = body.timeframe === undefined ? '60' : body.timeframe === '30' ? '30' : body.timeframe === '60' ? '60' : null;
+  const instrument = rawSymbol && timeframe ? resolveInstrument(rawSymbol, undefined, category ?? 'linear') : null;
+  const cryptoValid = instrument?.assetClass === 'crypto' && category !== null && /^[A-Z0-9]{2,30}$/.test(rawSymbol);
+  if (!instrument || !timeframe || (instrument.assetClass === 'crypto' && !cryptoValid)) {
+    return NextResponse.json({ error: 'invalid_request', message: 'Choose a valid crypto or forex instrument and a 30m or 1H confirmation timeframe.' }, { status: 400 });
   }
+  const storedSymbol = instrument.assetClass === 'forex' ? instrument.symbol : rawSymbol;
+  const marketCategory = instrument.assetClass === 'forex' ? 'forex' : category!;
 
   try {
     const client = await createSupabaseServerClient();
@@ -43,26 +52,31 @@ export async function POST(request: Request) {
       }
     }
 
-    const cacheKey = `${category}:${symbol}:${timeframe}:${profile.id}:${profile.version}`;
+    const cacheKey = `${marketCategory}:${storedSymbol}:${timeframe}:${profile.id}:${profile.version}`;
     const cached = cache.get(cacheKey);
     if (cached && cached.expires > Date.now()) {
-      return NextResponse.json({ ...cached.report, strategyProfile: cached.profile, engineVersion: 'orion-smc-backtest-1.0.0', feed: { category, source: cached.report.source, lastSuccessfulUpdate: cached.lastSuccessfulUpdate }, cached: true }, { headers: { 'Cache-Control': 'no-store' } });
+      return NextResponse.json({ ...cached.report, strategyProfile: cached.profile, engineVersion: 'orion-smc-backtest-1.0.0', feed: { category: marketCategory, source: cached.report.source, lastSuccessfulUpdate: cached.lastSuccessfulUpdate }, cached: true }, { headers: { 'Cache-Control': 'no-store' } });
     }
 
-    const [daily, fourHour, oneHour, thirtyMinute] = await Promise.all([
-      marketData.getCandles(category, symbol, 'D', 400),
-      marketData.getCandles(category, symbol, '240', 400),
-      marketData.getCandles(category, symbol, '60', timeframe === '60' ? 800 : 400),
-      marketData.getCandles(category, symbol, '30', timeframe === '30' ? 800 : 400),
-    ]);
-    const report = runBacktest({
-      symbol, timeframe,
-      candles: { daily: toOhlcv(daily.candles), fourHour: toOhlcv(fourHour.candles), oneHour: toOhlcv(oneHour.candles), thirtyMinute: toOhlcv(thirtyMinute.candles) },
-      options: settingsToEngineOptions(profile.settings),
-    });
-    const lastSuccessfulUpdate = [daily, fourHour, oneHour, thirtyMinute].map((result) => result.lastUpdated).sort().at(-1) || new Date().toISOString();
+    let candles: { daily: OHLCV[]; fourHour: OHLCV[]; oneHour: OHLCV[]; thirtyMinute: OHLCV[] };
+    let lastSuccessfulUpdate: string;
+    if (instrument.assetClass === 'forex') {
+      const loaded = await loadInstrumentCandles(marketRegistry, instrument, { daily: 400, fourHour: 400, oneHour: timeframe === '60' ? 800 : 400, thirtyMinute: timeframe === '30' ? 800 : 400 });
+      candles = loaded.candles;
+      lastSuccessfulUpdate = loaded.lastSuccessfulUpdate;
+    } else {
+      const [daily, fourHour, oneHour, thirtyMinute] = await Promise.all([
+        marketData.getCandles(category!, rawSymbol, 'D', 400),
+        marketData.getCandles(category!, rawSymbol, '240', 400),
+        marketData.getCandles(category!, rawSymbol, '60', timeframe === '60' ? 800 : 400),
+        marketData.getCandles(category!, rawSymbol, '30', timeframe === '30' ? 800 : 400),
+      ]);
+      candles = { daily: toOhlcv(daily.candles), fourHour: toOhlcv(fourHour.candles), oneHour: toOhlcv(oneHour.candles), thirtyMinute: toOhlcv(thirtyMinute.candles) };
+      lastSuccessfulUpdate = [daily, fourHour, oneHour, thirtyMinute].map((result) => result.lastUpdated).sort().at(-1) || new Date().toISOString();
+    }
+    const report = runBacktest({ symbol: storedSymbol, timeframe, candles, options: settingsToEngineOptions(profile.settings) });
     cache.set(cacheKey, { report, profile, lastSuccessfulUpdate, expires: Date.now() + CACHE_MS });
-    return NextResponse.json({ ...report, strategyProfile: profile, engineVersion: 'orion-smc-backtest-1.0.0', feed: { category, source: report.source, lastSuccessfulUpdate }, cached: false }, { headers: { 'Cache-Control': 'no-store' } });
+    return NextResponse.json({ ...report, strategyProfile: profile, engineVersion: 'orion-smc-backtest-1.0.0', feed: { category: marketCategory, source: report.source, lastSuccessfulUpdate }, cached: false }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
     const failure = error instanceof MarketDataError ? error : new MarketDataError('Backtest failed while loading verified candles.');
     return NextResponse.json({ error: failure.code, message: failure.message }, { status: failure.status });
