@@ -1,6 +1,6 @@
 # Project Orion
 
-Mobile-first personal trading workspace with authenticated AI chat, selectable providers, and public crypto market data.
+Mobile-first personal trading workspace with authenticated AI chat, selectable providers, and public crypto and forex market data.
 
 ## Local setup
 
@@ -25,7 +25,7 @@ The Trading Tools page separates linear crypto quantity/notional assumptions fro
 
 News & Sessions displays release headlines directly from official BLS Employment Situation/CPI feeds and the Federal Reserve monetary policy feed. Its in-app calendar loads the next 120 days of scheduled BLS releases and FOMC date ranges from official sources. If the BLS calendar subscription endpoint is blocked, Orion falls back to official month-list schedules; those pages do not provide consensus forecasts, impact scores, or actual/previous event comparisons, so Orion leaves those values unrated and empty. Chart screenshot attachments are validated as PNG, JPEG, or WebP up to 3 MB, stored in a private Supabase bucket, and delivered through an authenticated no-store image route. The message stores only the private object path in metadata. The selected OpenRouter vision model receives the image for analysis; provider retention terms apply. Gemini image analysis is not implemented.
 
-The Market Outlook view combines a requested crypto SMC assessment from Bybit with a separate list of recent official U.S. macro release headlines. It shows supporting/conflicting rules, freshness, invalidation, and confirmation needs. It does not assign news impact or cover forex technical candles; upcoming BLS/FOMC dates link to their official calendars.
+The Market Outlook view combines a requested crypto SMC assessment from Bybit with a separate list of recent official U.S. macro release headlines. It shows supporting/conflicting rules, freshness, invalidation, and confirmation needs. It does not assign news impact; upcoming BLS/FOMC dates link to their official calendars. The shared `/api/smc/analyze` engine now also accepts supported forex pairs through the provider-neutral market layer below.
 
 Market Outlook derives **conditional scenarios** (`src/lib/smc/scenarios.ts`) from the assessment: a bias-aligned primary scenario, a counter-bias alternative when conflicts or invalidation appear, and a neutral "wait" scenario when structure is unaligned. Every entry zone, target, and invalidation level is taken from the engine's own computed swings, liquidity pools, gaps, and order blocks — no level is invented and no per-scenario confidence score is generated.
 
@@ -56,6 +56,12 @@ The Markets page reads public V5 candle and instrument endpoints. No Bybit API k
 Live verification: Bybit's public `linear/BTCUSDT` 1-hour candle endpoint returned `retCode: 0` and timestamps that parsed as 03:00, 04:00, and 05:00 UTC on 2026-10-13; the 05:00 candle was correctly marked as forming at the 05:40 UTC verification time. On 2026-10-13, the configured Gemini key could read the `gemini-3.1-flash-lite` model metadata, and that model advertised `generateContent`. A text-generation request was not sent because this workspace cannot determine whether the Google project is on the free or paid billing tier. Supabase PostgREST returned HTTP 200 for the migrated conversation, message, strategy, analysis, and journal tables using only the public key and no user session; this confirms the tables are reachable but does not verify authenticated writes or reads. Gemini generation, OpenRouter generation, and signed-in Supabase persistence are covered only by mocks/code paths here.
 
 OpenRouter catalogue verification on 2026-10-13: the configured key loaded the current model catalogue and resolved `nvidia/nemotron-3.5-lightning:free` as text-capable with zero prompt and completion prices. The catalogue omitted request-level pricing for that entry, while marking it with the explicit `:free` model ID. No live chat-completion request was sent, so generated responses remain unverified.
+
+## Provider-neutral market data (crypto + forex)
+
+`src/lib/market/instrument.ts` and `src/lib/market/provider.ts` add a provider-neutral layer on top of the existing Bybit service without changing it. `resolveInstrument` normalizes a user-typed symbol (`BTCUSDT`, `BTC/USDT`, `EURUSD`, `EUR/USD`, `eur-usd`) into a descriptor with an asset class, provider, base/quote, and canonical timeframe. `MarketDataRegistry` selects the provider by asset class: `BybitMarketDataProvider` wraps the untouched `BybitPublicMarketData`, and `TwelveDataForexProvider` serves supported forex pairs through Twelve Data. Both return a uniform `CandleSeries` identifying the instrument, timeframe, source, retrieval time, and staleness.
+
+`src/lib/smc/instrument-analysis.ts` feeds either provider's candles into the same deterministic engine, so crypto and forex share one analysis pipeline. Crypto symbols without an explicit quote are treated as crypto (a fixed forex-pair allowlist disambiguates six-letter cases like `BTCUSD`). Forex candles have no true volume, so volume is reported as 0 rather than invented. Missing forex credentials, unsupported instruments, and provider quota errors each return a controlled error instead of fabricated data.
 
 ## Deterministic SMC analysis
 

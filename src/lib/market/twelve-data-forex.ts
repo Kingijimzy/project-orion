@@ -1,5 +1,5 @@
 export const FOREX_PAIRS = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD', 'USD/CHF', 'NZD/USD', 'EUR/JPY', 'GBP/JPY', 'AUD/JPY', 'AUD/CAD', 'GBP/CAD', 'GBP/AUD'] as const;
-export const FOREX_INTERVALS = ['5min', '15min', '30min', '1h', '4h', '1day'] as const;
+export const FOREX_INTERVALS = ['1min', '5min', '15min', '30min', '1h', '4h', '1day'] as const;
 export type ForexPair = typeof FOREX_PAIRS[number];
 export type ForexInterval = typeof FOREX_INTERVALS[number];
 
@@ -7,7 +7,7 @@ export type ForexCandle = { timestamp: number; open: number; high: number; low: 
 export type TwelveDataPayload = { meta?: { symbol?: string; interval?: string; exchange_timezone?: string }; values?: Array<Record<string, unknown>>; status?: string; code?: number; message?: string };
 
 const INTERVAL_MS: Record<ForexInterval, number> = {
-  '5min': 5 * 60_000, '15min': 15 * 60_000, '30min': 30 * 60_000,
+  '1min': 60_000, '5min': 5 * 60_000, '15min': 15 * 60_000, '30min': 30 * 60_000,
   '1h': 60 * 60_000, '4h': 4 * 60 * 60_000, '1day': 24 * 60 * 60_000,
 };
 
