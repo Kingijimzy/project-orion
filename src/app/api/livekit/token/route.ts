@@ -26,10 +26,26 @@ export async function POST() {
   if (error || !user) return NextResponse.json({ error: 'authentication_required', message: 'Sign in to start a private Orion voice session.' }, { status: 401 });
 
   const roomName = `orion-${user.id}-${crypto.randomUUID()}`;
+
+  // Give the voice agent the same starting context as text chat: the user's selected
+  // strategy profile. Only non-secret labels are attached; prices still come from the
+  // deterministic engine, never the model.
+  let strategy: { name: string; version: number } | null = null;
+  try {
+    const { data: rows } = await supabase.from('strategy_profiles').select('name, version').eq('user_id', user.id).eq('is_selected', true).limit(1);
+    const row = rows?.[0];
+    if (row && typeof row.name === 'string' && typeof row.version === 'number') strategy = { name: row.name, version: row.version };
+  } catch { strategy = null; }
+
+  const attributes: Record<string, string> = { 'orion.context': 'trading-workspace' };
+  if (strategy) { attributes['orion.strategyName'] = strategy.name; attributes['orion.strategyVersion'] = String(strategy.version); }
+
   const token = new AccessToken(apiKey, apiSecret, {
     identity: user.id,
     name: 'Orion user',
     ttl: '10m',
+    metadata: JSON.stringify({ role: 'orion-user', strategy }),
+    attributes,
   });
   token.addGrant({
     roomJoin: true,
@@ -44,6 +60,7 @@ export async function POST() {
     roomName,
     token: await token.toJwt(),
     agentName: process.env.LIVEKIT_AGENT_NAME?.trim() || 'orion-voice-agent',
+    strategy,
     expiresInSeconds: 600,
   }, { headers: { 'Cache-Control': 'no-store' } });
 }

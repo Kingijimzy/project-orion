@@ -42,6 +42,7 @@ LiveKit Cloud currently documents a free Build plan with limited monthly inferen
 ## Current scope and limitations
 
 - The first phase supports real-time spoken conversation, interruption/turn-taking handled by the realtime model, and audio playback.
+- The worker reads the user's selected strategy profile from the participant metadata that the token endpoint attaches, and frames the discussion around it. It carries no secrets and no prices.
 - The agent is not yet wired to Orion's Bybit or SMC tools. It must not claim live prices or calculated levels; it tells users to consult the Market/SMC pages for verified data.
 - The Next.js token endpoint requires an authenticated Supabase user, issues a short-lived room-specific token, and never exposes the API secret.
 - Run the web app's typecheck, tests, and production build after installing the added npm dependencies. This repository connector cannot run those commands directly.

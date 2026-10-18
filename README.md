@@ -91,7 +91,7 @@ See [voice-agent/README.md](voice-agent/README.md). The agent is a separate Pyth
 
 ### Current scope and safety
 
-Voice Orion currently has a LiveKit room UI, authenticated short-lived room-token endpoint, and separate Python agent source. The agent is **not connected to Bybit candles or the deterministic SMC tool**. It must not invent live prices, price levels, or news and does not place trades. The feature branch's npm tests, typecheck, and production build pass, but the LiveKit credentials, worker startup, microphone permissions, room join, and speech response have not been tested end to end. Do not treat voice as available until those live checks pass.
+Voice Orion currently has a LiveKit room UI, authenticated short-lived room-token endpoint, and separate Python agent source. The token endpoint attaches the signed-in user's selected strategy profile as participant metadata, and the worker reads it as the same starting context text chat uses; it carries no secrets. The UI handles microphone-permission denial, device failure, disconnection, and LiveKit reconnection, and always offers a "continue in text chat" fallback. The agent is still **not connected to Bybit candles or the deterministic SMC tool**. It must not invent live prices, price levels, or news and does not place trades. The branch's npm tests, typecheck, production build, and `python3 -m py_compile voice-agent/agent.py` pass, but LiveKit worker startup, microphone permissions, room join, and speech response have not been tested end to end. Do not treat voice as available until those live checks pass.
 
 ## Forex reference data and intraday candles
 
