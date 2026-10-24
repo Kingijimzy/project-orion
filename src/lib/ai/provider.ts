@@ -1,5 +1,5 @@
 export type AssistantMode = 'general' | 'trading-coach' | 'chart-analysis' | 'journal-review';
-export type ProviderMessage = { role: 'user' | 'assistant'; content: string };
+export type ProviderMessage = { role: 'user' | 'assistant'; content: string; image?: { mimeType: 'image/jpeg' | 'image/png' | 'image/webp'; data: string } };
 export type ProviderConfig = { model: string; apiKey: string; allowPaid: boolean };
 
 /** Models verified against Google's published Standard Free Tier pricing on 2026-10-13. */
@@ -77,7 +77,7 @@ export class GeminiProvider implements ChatProvider {
   constructor(private readonly config: ProviderConfig, private readonly fetcher: typeof fetch = fetch) {}
 
   async *stream(messages: ProviderMessage[], mode: AssistantMode, signal: AbortSignal): AsyncIterable<string> {
-    const contents = messages.map((message) => ({ role: message.role === 'assistant' ? 'model' : 'user', parts: [{ text: message.content }] }));
+    const contents = messages.map((message) => ({ role: message.role === 'assistant' ? 'model' : 'user', parts: [{ text: message.content }, ...(message.image ? [{ inlineData: { mimeType: message.image.mimeType, data: message.image.data } }] : [])] }));
     let response: Response;
     try {
       response = await this.fetcher(geminiEndpoint(this.config.model), {
@@ -148,7 +148,7 @@ export class OpenRouterProvider implements ChatProvider {
         headers: { Authorization: `Bearer ${this.apiKey}`, 'Content-Type': 'application/json', Accept: 'text/event-stream' },
         body: JSON.stringify({
           model: this.model,
-          messages: [{ role: 'system', content: modeInstructions[mode] }, ...messages],
+          messages: [{ role: 'system', content: modeInstructions[mode] }, ...messages.map((message) => message.image ? { role: message.role, content: [{ type: 'text', text: message.content }, { type: 'image_url', image_url: { url: `data:${message.image.mimeType};base64,${message.image.data}` } }] } : message)],
           stream: true,
           max_tokens: 4096,
         }),
