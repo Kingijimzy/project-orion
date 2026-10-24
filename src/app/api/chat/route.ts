@@ -36,13 +36,13 @@ function smcProviderContext(result: NonNullable<Awaited<ReturnType<typeof analyz
 }
 
 export async function POST(request: Request) {
-  const parsedBody = await readLimitedJson(request);
+  const parsedBody = await readLimitedJson(request, 6 * 1024 * 1024);
   if (!parsedBody.ok) return parsedBody.reason === 'too_large'
-    ? jsonError(413, 'request_too_large', 'This request is too large. Keep messages under 12,000 characters.')
+    ? jsonError(413, 'request_too_large', 'This request is too large. Images must be 4 MB or smaller and text must be under 12,000 characters.')
     : jsonError(400, 'invalid_request', 'Send a valid JSON request.');
   const body = parsedBody.value;
   const input = validateChatRequest(body);
-  if (!input) return jsonError(400, 'invalid_request', 'A conversation ID, non-empty message (up to 12,000 characters), supported provider/model, and valid assistant mode are required.');
+  if (!input) return jsonError(400, 'invalid_request', 'A conversation ID, text or supported image attachment, supported provider/model, and valid assistant mode are required.');
   if (!supabaseConfiguration()) return jsonError(503, 'supabase_not_configured', 'Configure NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY and apply the Supabase migration before using private chat.');
 
   const supabase = await createSupabaseServerClient();
@@ -76,15 +76,19 @@ export async function POST(request: Request) {
 
   if (input.retry) {
     const last = previousMessages?.at(-1);
-    if (!last || last.role !== 'user' || last.content !== input.message) return jsonError(409, 'retry_not_available', 'There is no matching user message to retry.');
+    if (!last || last.role !== 'user' || (last.content !== input.message && last.content !== `${input.message}\n[Image attached: ${input.image?.name || 'image'}; upload again to analyze this image later]`)) return jsonError(409, 'retry_not_available', 'There is no matching user message to retry.');
   } else {
-    const { error: saveUserError } = await supabase.from('messages').insert({ conversation_id: input.conversationId, user_id: user.id, role: 'user', content: input.message, provider: input.provider, model_id: input.model, assistant_mode: input.mode });
+    const { error: saveUserError } = await supabase.from('messages').insert({ conversation_id: input.conversationId, user_id: user.id, role: 'user', content: input.image ? `${input.message}\n[Image attached: ${input.image.name || 'image'}; upload again to analyze this image later]` : input.message, provider: input.provider, model_id: input.model, assistant_mode: input.mode });
     if (saveUserError) return jsonError(500, 'message_save_failed', 'Could not save your message. Try again.');
   }
   await supabase.from('conversations').update({ provider: input.provider, model_id: input.model, updated_at: new Date().toISOString() }).eq('id', input.conversationId).eq('user_id', user.id);
   const history: ProviderMessage[] = input.retry
     ? (previousMessages || []).map((message) => ({ role: message.role as ProviderMessage['role'], content: message.content }))
     : [...(previousMessages || []).map((message) => ({ role: message.role as ProviderMessage['role'], content: message.content })), { role: 'user', content: input.message }];
+  if (input.image) {
+    const lastUserIndex = history.map((message) => message.role).lastIndexOf('user');
+    if (lastUserIndex >= 0) history[lastUserIndex] = { ...history[lastUserIndex], image: { mimeType: input.image.mimeType, data: input.image.data } };
+  }
   if (smcResult) {
     const lastUserIndex = history.map((message) => message.role).lastIndexOf('user');
     if (lastUserIndex >= 0) history[lastUserIndex] = { ...history[lastUserIndex], content: `${history[lastUserIndex].content}\n\n[Verified deterministic SMC tool result from Bybit V5. Treat every calculated price level and state below as fixed engine output: do not alter, recalculate, or replace levels. Explain the rule evidence and call out missing confirmations. If data quality is invalid or stale, say no reliable setup conclusion can be made.]\n${JSON.stringify(smcProviderContext(smcResult))}` };
