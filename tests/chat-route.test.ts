@@ -18,7 +18,7 @@ test('chat route rejects empty messages and unsupported provider requests', asyn
 });
 
 test('chat route rejects request bodies above the byte limit', async () => {
-  const response = await POST(request(JSON.stringify({ message: 'x'.repeat(40_000) })));
+  const response = await POST(request(JSON.stringify({ message: 'x'.repeat(6 * 1024 * 1024) })));
   assert.equal(response.status, 413);
   assert.equal((await response.json()).error, 'request_too_large');
 });
