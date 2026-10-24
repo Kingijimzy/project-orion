@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { ChangeEvent, FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { Activity, ArrowUpRight, BarChart3, Bell, BrainCircuit, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Compass, FileText, Globe2, LayoutDashboard, LoaderCircle, Menu, MessageSquare, MoreHorizontal, Plus, Search, Send, Settings2, ShieldCheck, Sparkles, SquarePen, TrendingUp, Trash2, Pencil, X, LogOut, StopCircle, RotateCcw } from 'lucide-react';
 import type { AuthChangeEvent, Session, User } from '@supabase/supabase-js';
 import { getSupabaseBrowserClient, supabaseBrowserConfiguration } from '@/lib/supabase/client';
@@ -12,12 +12,13 @@ import { StrategySettingsPage } from './strategy-settings-page';
 import { TradingToolsPage } from './trading-tools-page';
 import { JournalPage } from './journal-page';
 
-type ChatMessage = { id?: string; role: 'assistant' | 'user'; text: string; status?: 'loading' | 'error' | 'stopped' };
+type ChatMessage = { id?: string; role: 'assistant' | 'user'; text: string; imageDataUrl?: string; imageName?: string; status?: 'loading' | 'error' | 'stopped' };
+type PendingImage = { name: string; mimeType: 'image/jpeg' | 'image/png' | 'image/webp'; data: string; dataUrl: string };
 type Conversation = { id: string; title: string; provider: ProviderId; model_id: string | null; created_at: string; updated_at: string };
 type Mode = 'general' | 'trading-coach' | 'chart-analysis' | 'journal-review';
 type ProviderId = 'gemini' | 'openrouter' | 'openai-compatible' | 'deepseek-compatible';
 type ProviderInfo = { configured: boolean; model?: string | null; paidUseEnabled?: boolean; message?: string };
-type ModelOption = { id: string; name: string; free: boolean | null; contextLength: number | null };
+type ModelOption = { id: string; name: string; free: boolean | null; contextLength: number | null; inputModalities?: string[] };
 type SMCResponse = { analysis: SMCAssessment; source: string; lastSuccessfulUpdate: string; candles: { daily: OHLCV[]; fourHour: OHLCV[]; oneHour: OHLCV[]; thirtyMinute: OHLCV[] }; strategyProfile?: { id:string; name:string; version:number; settings:{swingLeft:number;swingRight:number} }; engineVersion?:string; savedAnalysisId?:string|null; historyWarning?:string|null };
 const nav = [
   { title: 'Workspace', items: [{ name: 'Home', icon: LayoutDashboard }, { name: 'AI Chat', icon: MessageSquare }, { name: 'Markets', icon: TrendingUp }, { name: 'SMC Scanner', icon: Search }, { name: 'Chart Analyzer', icon: BarChart3 }, { name: 'Strategy Settings', icon: Settings2 }, { name: 'Trading Tools', icon: Compass }] },
@@ -72,6 +73,8 @@ export default function OrionApp() {
   const [mode, setMode] = useState<Mode>('trading-coach');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState('');
+  const [attachedImage, setAttachedImage] = useState<PendingImage | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
   const [chatTitle, setChatTitle] = useState('New conversation');
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -288,7 +291,7 @@ export default function OrionApp() {
   async function signOut() {
     const client = getSupabaseBrowserClient();
     if (client) await client.auth.signOut();
-    setUser(null); setConversationId(null); setMessages([]); setProvider('openrouter'); setSelectedModel(openRouterInfo.model || ''); setChatTitle('New conversation');
+    setUser(null); setConversationId(null); setMessages([]); setAttachedImage(null); setProvider('openrouter'); setSelectedModel(openRouterInfo.model || ''); setChatTitle('New conversation');
   }
 
   async function openConversation(conversation: Conversation) {
@@ -310,7 +313,7 @@ export default function OrionApp() {
 
   function newConversation() {
     abortRef.current?.abort(); abortRef.current = null;
-    setConversationId(null); setMessages([]); setProvider('openrouter'); setSelectedModel(openRouterInfo.model || ''); setChatTitle('New conversation'); setDraft(''); setChatError(''); setFailedPrompt(null); setLoading(false); setChatSmcResult(null); setSmcToolEnabled(false); setActive('AI Chat'); setDrawer(false);
+    setConversationId(null); setMessages([]); setAttachedImage(null); setProvider('openrouter'); setSelectedModel(openRouterInfo.model || ''); setChatTitle('New conversation'); setDraft(''); setChatError(''); setFailedPrompt(null); setLoading(false); setChatSmcResult(null); setSmcToolEnabled(false); setActive('AI Chat'); setDrawer(false);
   }
 
   async function renameConversation(item: Conversation) {
@@ -354,9 +357,53 @@ export default function OrionApp() {
     setSmcAnalysis({analysis,candles,source:'Saved Bybit candle snapshot',lastSuccessfulUpdate:String(item.last_market_update||''),strategyProfile:{id:String(item.strategy_profile_id||'snapshot'),name:String(item.strategy_name||'Saved profile'),version:Number(item.strategy_version)||1,settings:item.strategy_settings as {swingLeft:number;swingRight:number}},engineVersion:String(item.engine_version||'unknown'),savedAnalysisId:String(item.id)});
   }
 
+  async function handleImageSelected(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    const allowed = ['image/jpeg', 'image/png', 'image/webp'] as const;
+    if (!allowed.includes(file.type as typeof allowed[number])) { setChatError('Use a JPEG, PNG, or WebP image. HEIC and GIF are not supported yet.'); return; }
+    try {
+      let processed: Blob = file;
+      let outputName = file.name.slice(0, 180);
+      if (file.size > 4 * 1024 * 1024) {
+        const bitmap = await createImageBitmap(file);
+        const compress = async (maxDimension: number, quality: number): Promise<Blob> => {
+          const scale = Math.min(1, maxDimension / Math.max(bitmap.width, bitmap.height));
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+          canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+          const context = canvas.getContext('2d');
+          if (!context) throw new Error('Your browser could not prepare this image. Try a smaller file.');
+          context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+          const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((value) => value ? resolve(value) : reject(new Error('Orion could not compress this image.')), 'image/jpeg', quality));
+          return blob;
+        };
+        try {
+          processed = await compress(2048, 0.9);
+          if (processed.size > 4 * 1024 * 1024) processed = await compress(1600, 0.8);
+        } finally { bitmap.close(); }
+        if (processed.size > 4 * 1024 * 1024) throw new Error('This image is too large to compress safely. Choose a smaller image.');
+        outputName = file.name.replace(/\.[^.]+$/, '') + '.jpg';
+      }
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error('Orion could not read this image file.'));
+        reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('Orion could not decode this image file.'));
+        reader.readAsDataURL(processed);
+      });
+      const comma = dataUrl.indexOf(',');
+      if (comma < 0) throw new Error('Orion could not decode this image file.');
+      setAttachedImage({ name: outputName, mimeType: processed.type as PendingImage['mimeType'], data: dataUrl.slice(comma + 1), dataUrl });
+      setChatError('');
+    } catch (error) { setChatError(error instanceof Error ? error.message : 'Orion could not read this image file.'); }
+  }
+
   async function sendMessage(text = draft, retry = false) {
     const value = text.trim();
-    if (!value || loading) return;
+    const image = attachedImage;
+    if ((!value && !image) || loading) return;
+    const messageText = value || `[Please analyze the attached image: ${image?.name || 'image'}.]`;
     if (!user) { setChatError('Sign in to use private, persistent AI chat.'); return; }
     if (provider !== 'gemini' && provider !== 'openrouter') {
       setChatError(`${providerNames[provider]} is not configured yet.`);
@@ -376,23 +423,23 @@ export default function OrionApp() {
     let id = conversationId;
     try {
       if (!id) {
-        const title = value.length > 80 ? `${value.slice(0, 77)}…` : value;
+        const title = messageText.length > 80 ? `${messageText.slice(0, 77)}…` : messageText;
         const createResponse = await fetch('/api/conversations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, provider, model: selectedModel }) });
         if (!createResponse.ok) throw new Error(await responseError(createResponse));
         const created = (await createResponse.json() as { conversation: Conversation }).conversation;
         id = created.id;
         setConversationId(created.id); setChatTitle(created.title); setConversations((items) => [created, ...items.filter((item) => item.id !== created.id)]);
       }
-      if (!retry) setMessages((items) => [...items, { role: 'user', text: value }, { role: 'assistant', text: '', status: 'loading' }]);
+      if (!retry) setMessages((items) => [...items, { role: 'user', text: value, ...(image ? { imageDataUrl: image.dataUrl, imageName: image.name } : {}) }, { role: 'assistant', text: '', status: 'loading' }]);
       else setMessages((items) => [...items, { role: 'assistant', text: '', status: 'loading' }]);
       const controller = new AbortController(); abortRef.current = controller;
       const response = await fetch('/api/chat', {
         method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' }, signal: controller.signal,
-        body: JSON.stringify({ conversationId: id, message: value, mode, provider, model: selectedModel, retry, ...(smcToolEnabled ? { smcRequest: { symbol: smcSymbol, category: smcCategory, timeframe: smcTimeframe } } : {}) }),
+        body: JSON.stringify({ conversationId: id, message: messageText, ...(image ? { image: { mimeType: image.mimeType, data: image.data, name: image.name } } : {}), mode, provider, model: selectedModel, retry, ...(smcToolEnabled ? { smcRequest: { symbol: smcSymbol, category: smcCategory, timeframe: smcTimeframe } } : {}) }),
       });
       if (!response.ok) throw new Error(await responseError(response));
       if (!response.body) throw new Error('The server returned no response stream. Try again.');
-      const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ''; let eventName = ''; let streamError = '';
+      const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ''; let eventName = ''; let streamError = ''; let streamDone = false;
       const consumeEvent = (block: string) => {
         const lines = block.split(/\r?\n/); eventName = '';
         let dataText = '';
@@ -405,6 +452,7 @@ export default function OrionApp() {
           } else if (eventName === 'smc-result' && payload.analysis) {
             if(payload.candles)setChatSmcResult({ analysis: payload.analysis, candles:payload.candles, source: payload.source || 'Bybit V5 public REST', lastSuccessfulUpdate: payload.lastSuccessfulUpdate || '' });
           } else if (eventName === 'error') streamError = payload.message || 'The selected provider could not complete this response.';
+          else if (eventName === 'done') streamDone = true;
         } catch { streamError = 'The server returned malformed stream data. Try again.'; }
       };
       while (true) {
@@ -416,10 +464,12 @@ export default function OrionApp() {
       }
       if (buffer.trim()) consumeEvent(buffer);
       if (requestId !== activeRequestRef.current) return;
+      if (!streamError && !streamDone) streamError = 'The AI stream ended before Orion received a completion signal. Your message is preserved; retry or switch to another available model.';
       if (streamError) {
-        setChatError(streamError); setFailedPrompt(value);
+        setChatError(streamError); setFailedPrompt(messageText);
         setMessages((items) => { const next = [...items]; const last = next[next.length - 1]; if (last?.role === 'assistant') { if (last.text) next[next.length - 1] = { ...last, status: 'error' }; else next.pop(); } return next; });
       } else {
+        if (image) setAttachedImage(null);
         setMessages((items) => { const next = [...items]; const last = next[next.length - 1]; if (last?.role === 'assistant') next[next.length - 1] = { ...last, status: undefined }; return next; });
         void loadConversationList().catch(() => {});
       }
@@ -456,14 +506,14 @@ export default function OrionApp() {
       <header className="topbar"><div className="top-left"><button className="icon-button mobile-menu" aria-label="Open navigation" onClick={() => setDrawer(true)}><Menu size={19}/></button><div className="breadcrumb"><span>Workspace</span><ChevronRight size={14}/><strong>{active}</strong></div></div><div className="top-actions"><button className="icon-button notification" aria-label="Notifications"><Bell size={17}/><i/></button><button className="help-button"><CircleHelp size={16}/><span>Help</span></button></div></header>
       {active === 'AI Chat' ? <div className="chat-layout">
         <div className="chat-top"><div className="chat-heading"><div><div className="eyebrow"><span className="green-pip"/> PRIVATE WORKSPACE</div><h1>{messages.length ? chatTitle : 'Your trading copilot'}</h1><p>Think clearly. Trade your plan.</p></div><button className="icon-button chat-more" aria-label="New conversation" title="New conversation" onClick={newConversation}><MoreHorizontal size={20}/></button></div>
-          <div className="chat-controls"><label className="select-wrap"><span className="provider-glyph">✳</span><select value={provider} onChange={(e) => void changeProvider(e.target.value as ProviderId)} aria-label="AI provider"><option value="gemini">Gemini</option><option value="openrouter">OpenRouter</option><option value="openai-compatible">OpenAI-compatible · unavailable</option><option value="deepseek-compatible">DeepSeek-compatible · unavailable</option></select><ChevronDown size={13}/></label><span className={`provider-state ${(provider === 'gemini' ? providerInfo.configured : provider === 'openrouter' ? openRouterInfo.configured : false) ? 'provider-ready' : ''}`} title={provider === 'gemini' ? providerNotice : openRouterInfo.message || ''}><i/>{provider === 'gemini' ? providerNotice : provider === 'openrouter' ? modelsBusy ? 'Loading models…' : openRouterInfo.configured ? 'Validated · OpenRouter' : openRouterInfo.message || 'Setup needed' : 'Not configured'}</span>{provider === 'openrouter' && <input className="model-search" type="search" placeholder="Find a model" aria-label="Search OpenRouter models" value={modelSearch} onChange={(e) => setModelSearch(e.target.value)}/>}<label className="select-wrap model-select-wrap"><span className="model-label">MODEL</span><select value={selectedModel} onChange={(e) => { setSelectedModel(e.target.value); void saveConversationSelection(provider, e.target.value); }} aria-label="AI model" disabled={provider === 'gemini' ? !providerInfo.model : provider !== 'openrouter' || models.length === 0}><option value="">Select model</option>{(provider === 'openrouter' ? models.filter((item) => !modelSearch || item.name.toLowerCase().includes(modelSearch.toLowerCase()) || item.id.toLowerCase().includes(modelSearch.toLowerCase())) : providerInfo.model ? [{ id: providerInfo.model, name: providerInfo.model, free: null, contextLength: null }] : []).map((item) => <option value={item.id} key={item.id}>{item.name}{item.free === true ? ' · Free' : item.free === false ? ' · Paid' : provider === 'openrouter' ? ' · Pricing unknown' : ''}</option>)}</select><ChevronDown size={13}/></label>{provider === 'openrouter' && freeFilterAvailable && <label className="free-filter"><input type="checkbox" checked={freeOnly} onChange={async (e) => { const next = e.target.checked; setFreeOnly(next); try { await loadOpenRouterModels(next); } catch (error) { setChatError(error instanceof Error ? error.message : 'Could not update model list.'); } }}/>Free models</label>}<span className="control-divider"/><label className="mode-select"><span>Mode</span><select value={mode} onChange={(e) => setMode(e.target.value as Mode)} aria-label="Assistant mode">{Object.entries(modeNames).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><ChevronDown size={13}/></label></div>
+          <div className="chat-controls"><label className="select-wrap"><span className="provider-glyph">✳</span><select value={provider} onChange={(e) => void changeProvider(e.target.value as ProviderId)} aria-label="AI provider"><option value="gemini">Gemini</option><option value="openrouter">OpenRouter</option><option value="openai-compatible">OpenAI-compatible · unavailable</option><option value="deepseek-compatible">DeepSeek-compatible · unavailable</option></select><ChevronDown size={13}/></label><span className={`provider-state ${(provider === 'gemini' ? providerInfo.configured : provider === 'openrouter' ? openRouterInfo.configured : false) ? 'provider-ready' : ''}`} title={provider === 'gemini' ? providerNotice : openRouterInfo.message || ''}><i/>{provider === 'gemini' ? providerNotice : provider === 'openrouter' ? modelsBusy ? 'Loading models…' : openRouterInfo.configured ? 'Validated · OpenRouter' : openRouterInfo.message || 'Setup needed' : 'Not configured'}</span>{provider === 'openrouter' && <input className="model-search" type="search" placeholder="Find a model" aria-label="Search OpenRouter models" value={modelSearch} onChange={(e) => setModelSearch(e.target.value)}/>}<label className="select-wrap model-select-wrap"><span className="model-label">MODEL</span><select value={selectedModel} onChange={(e) => { setSelectedModel(e.target.value); void saveConversationSelection(provider, e.target.value); }} aria-label="AI model" disabled={provider === 'gemini' ? !providerInfo.model : provider !== 'openrouter' || models.length === 0}><option value="">Select model</option>{(provider === 'openrouter' ? models.filter((item) => !modelSearch || item.name.toLowerCase().includes(modelSearch.toLowerCase()) || item.id.toLowerCase().includes(modelSearch.toLowerCase())) : providerInfo.model ? [{ id: providerInfo.model, name: providerInfo.model, free: null, contextLength: null }] : []).map((item) => <option value={item.id} key={item.id}>{item.name}{item.free === true ? ' · Free' : item.free === false ? ' · Paid' : provider === 'openrouter' ? ' · Pricing unknown' : ''}{item.inputModalities?.includes('image') ? ' · Vision' : ''}</option>)}</select><ChevronDown size={13}/></label>{provider === 'openrouter' && freeFilterAvailable && <label className="free-filter"><input type="checkbox" checked={freeOnly} onChange={async (e) => { const next = e.target.checked; setFreeOnly(next); try { await loadOpenRouterModels(next); } catch (error) { setChatError(error instanceof Error ? error.message : 'Could not update model list.'); } }}/>Free models</label>}<span className="control-divider"/><label className="mode-select"><span>Mode</span><select value={mode} onChange={(e) => setMode(e.target.value as Mode)} aria-label="Assistant mode">{Object.entries(modeNames).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><ChevronDown size={13}/></label></div>
         </div>
         <div className="conversation-area">
           {!user ? <div className="auth-gate"><div className="welcome-icon"><ShieldCheck size={22}/></div><h2>{supabaseReady ? 'Your private chat starts here.' : 'Connect Supabase to continue.'}</h2><p>{supabaseReady ? 'Sign in or create an account. Orion stores conversations under your account with row-level security.' : 'Set the Supabase project URL and public key in .env.local, apply the migration, then restart Orion.'}</p>{supabaseReady && <form className="auth-form" onSubmit={submitAuth}><div className="auth-tabs"><button type="button" className={authMode === 'signin' ? 'auth-tab auth-tab-active' : 'auth-tab'} onClick={() => { setAuthMode('signin'); setAuthError(''); setAuthNotice(''); }}>Sign in</button><button type="button" className={authMode === 'signup' ? 'auth-tab auth-tab-active' : 'auth-tab'} onClick={() => { setAuthMode('signup'); setAuthError(''); setAuthNotice(''); }}>Create account</button></div><input type="email" autoComplete="email" required placeholder="Email address" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)}/><input type="password" autoComplete={authMode === 'signin' ? 'current-password' : 'new-password'} minLength={8} required placeholder="Password (at least 8 characters)" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)}/><button className="auth-submit" type="submit" disabled={authBusy}>{authBusy ? <><LoaderCircle size={14} className="spin"/> Working…</> : authMode === 'signin' ? 'Sign in securely' : 'Create account'}</button>{authError && <div className="inline-error">{authError}</div>}{authNotice && <div className="inline-notice">{authNotice}</div>}</form>}</div> : messages.length === 0 ? <div className="welcome-block"><div className="welcome-icon"><BrainCircuit size={22}/></div><h2>Good to have you here.</h2><p>Bring a setup, a question, or a trade you’re reflecting on.<br className="desktop-break"/> We’ll follow the evidence and your rules.</p><div className="suggestion-grid">{suggestions.map(({ title, caption, icon: Icon, prompt }) => <button className="suggestion" key={title} onClick={() => void sendMessage(prompt)}><div className="suggestion-icon"><Icon size={17}/></div><span className="suggestion-copy"><b>{title}</b><small>{caption}</small></span><ArrowUpRight className="suggestion-arrow" size={15}/></button>)}</div></div> : <div className="messages">{chatSmcResult && <SMCResultCard value={chatSmcResult} compact/>}{messages.map((message, index) => <div className={`message-row ${message.role}`} key={message.id || `${index}-${message.role}`}>
-            {message.role === 'assistant' && <div className="assistant-avatar"><Sparkles size={15}/></div>}<div className="message-content"><div className="message-label">{message.role === 'assistant' ? 'ORION' : 'YOU'}{message.status === 'loading' && <LoaderCircle size={11} className="spin message-spinner"/>}</div><p>{message.text || (message.status === 'loading' ? 'Thinking…' : '')}</p>{message.status === 'stopped' && <small className="partial-note">Generation stopped · partial text was not saved</small>}</div></div>)}</div>}
+            {message.role === 'assistant' && <div className="assistant-avatar"><Sparkles size={15}/></div>}<div className="message-content"><div className="message-label">{message.role === 'assistant' ? 'ORION' : 'YOU'}{message.status === 'loading' && <LoaderCircle size={11} className="spin message-spinner"/>}</div><p>{message.text || (message.status === 'loading' ? 'Thinking…' : '')}</p>{message.imageDataUrl && <img className="chat-image-preview" src={message.imageDataUrl} alt={message.imageName || 'Uploaded image'} />}{message.status === 'stopped' && <small className="partial-note">Generation stopped · partial text was not saved</small>}</div></div>)}</div>}
         </div>
         {chatError && user && <div className="chat-error" role="alert"><span>{chatError}</span>{failedPrompt && !loading && <button onClick={() => void sendMessage(failedPrompt, true)}><RotateCcw size={12}/> Retry</button>}<button className="dismiss-error" aria-label="Dismiss message" onClick={() => setChatError('')}><X size={13}/></button></div>}
-        <div className="composer-wrap"><div className="attachment-row"><span className="context-label">ADD CONTEXT</span><button onClick={() => setDraft((v) => v + (v ? ' ' : '') + 'BTCUSDT ')}>＋ Market</button><button onClick={() => setDraft((v) => v + (v ? ' ' : '') + '1H timeframe ')}>＋ Timeframe</button><button onClick={() => setDraft((v) => v + (v ? ' ' : '') + 'Journal review ')}>＋ Journal</button><button className={smcToolEnabled ? 'smc-tool-active' : ''} onClick={() => setSmcToolEnabled((enabled) => !enabled)}>＋ SMC tool {smcToolEnabled ? 'on' : ''}</button></div>{smcToolEnabled && <div className="smc-tool-controls"><label>Symbol<input value={smcSymbol} onChange={(event) => setSmcSymbol(event.target.value.toUpperCase())} maxLength={30}/></label><label>Market<select value={smcCategory} onChange={(event) => setSmcCategory(event.target.value as BybitCategory)}><option value="linear">Linear</option><option value="spot">Spot</option><option value="inverse">Inverse</option></select></label><label>Entry timeframe<select value={smcTimeframe} onChange={(event) => setSmcTimeframe(event.target.value as '30' | '60')}><option value="60">1H</option><option value="30">30M</option></select></label><small>Each send fetches Daily, 4H, 1H and 30M candles from Bybit before asking {provider === 'openrouter' ? 'OpenRouter' : 'Gemini'} to explain the deterministic result.</small></div>}<div className="composer"><textarea rows={1} placeholder={user ? provider === 'openai-compatible' || provider === 'deepseek-compatible' ? `${providerNames[provider]} is not configured…` : 'Ask Orion anything about your trading…' : 'Sign in to start a private conversation…'} value={draft} disabled={!user || loading} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void sendMessage(); } }} /><div className="composer-tools"><button className="attach-button" aria-label="Attach file" title="Image upload is not available in this phase" disabled><Plus size={19}/></button><span className="composer-hint">{provider === 'openrouter' ? 'Responses stream from the selected OpenRouter model.' : 'Responses stream from Gemini.'} Verify trading analysis.</span>{loading ? <button className="send-button stop-button" aria-label="Stop generation" title="Stop generation" onClick={stopGeneration}><StopCircle size={16}/></button> : <button className="send-button" aria-label="Send message" onClick={() => void sendMessage()} disabled={!draft.trim() || !user}><Send size={15}/></button>}</div></div><div className="composer-foot"><span><ShieldCheck size={12}/> Your workspace is private</span><span>ENTER TO SEND <kbd>↵</kbd></span></div></div>
+        <div className="composer-wrap"><input ref={imageInputRef} className="visually-hidden-file" type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => void handleImageSelected(event)} /><div className="attachment-row"><span className="context-label">ADD CONTEXT</span><button onClick={() => setDraft((v) => v + (v ? ' ' : '') + 'BTCUSDT ')}>＋ Market</button><button onClick={() => setDraft((v) => v + (v ? ' ' : '') + '1H timeframe ')}>＋ Timeframe</button><button onClick={() => setDraft((v) => v + (v ? ' ' : '') + 'Journal review ')}>＋ Journal</button><button className={smcToolEnabled ? 'smc-tool-active' : ''} onClick={() => setSmcToolEnabled((enabled) => !enabled)}>＋ SMC tool {smcToolEnabled ? 'on' : ''}</button></div>{smcToolEnabled && <div className="smc-tool-controls"><label>Symbol<input value={smcSymbol} onChange={(event) => setSmcSymbol(event.target.value.toUpperCase())} maxLength={30}/></label><label>Market<select value={smcCategory} onChange={(event) => setSmcCategory(event.target.value as BybitCategory)}><option value="linear">Linear</option><option value="spot">Spot</option><option value="inverse">Inverse</option></select></label><label>Entry timeframe<select value={smcTimeframe} onChange={(event) => setSmcTimeframe(event.target.value as '30' | '60')}><option value="60">1H</option><option value="30">30M</option></select></label><small>Each send fetches Daily, 4H, 1H and 30M candles from Bybit before asking {provider === 'openrouter' ? 'OpenRouter' : 'Gemini'} to explain the deterministic result.</small></div>}{attachedImage && <div className="pending-image"><img src={attachedImage.dataUrl} alt="Image ready to send"/><div><b>{attachedImage.name}</b><small>Ready for image analysis · max 4 MB</small></div><button type="button" aria-label="Remove attached image" onClick={() => setAttachedImage(null)}><X size={15}/></button></div>}<div className="composer"><textarea rows={1} placeholder={user ? provider === 'openai-compatible' || provider === 'deepseek-compatible' ? `${providerNames[provider]} is not configured…` : 'Ask Orion anything about your trading…' : 'Sign in to start a private conversation…'} value={draft} disabled={!user || loading} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void sendMessage(); } }} /><div className="composer-tools"><button type="button" className="attach-button" aria-label="Attach image" title="Attach a JPEG, PNG, or WebP image (max 4 MB)" disabled={!user || loading} onClick={() => imageInputRef.current?.click()}><Plus size={19}/></button><span className="composer-hint">{provider === 'openrouter' ? 'Responses stream from the selected OpenRouter model.' : 'Responses stream from Gemini.'} Verify trading analysis.</span>{loading ? <button className="send-button stop-button" aria-label="Stop generation" title="Stop generation" onClick={stopGeneration}><StopCircle size={16}/></button> : <button className="send-button" aria-label="Send message" onClick={() => void sendMessage()} disabled={(!draft.trim() && !attachedImage) || !user}><Send size={15}/></button>}</div></div><div className="composer-foot"><span><ShieldCheck size={12}/> Your workspace is private</span><span>ENTER TO SEND <kbd>↵</kbd></span></div></div>
       </div> : active === 'Markets' ? <div className="market-page">
         <div className="market-heading"><div><div className="eyebrow"><span className="green-pip"/> BYBIT PUBLIC MARKET DATA</div><h1>Crypto markets</h1><p>Public candle data · no trading credentials</p></div><button className="market-refresh" onClick={() => setMarketRefreshToken((value) => value + 1)} disabled={marketBusy}><RotateCcw size={14}/> Refresh</button></div>
         <div className="market-layout"><section className="market-sidebar"><label className="market-label">MARKET TYPE<select value={marketCategory} onChange={(event) => setMarketCategory(event.target.value as BybitCategory)}><option value="linear">Linear contracts</option><option value="spot">Spot</option><option value="inverse">Inverse contracts</option></select></label><label className="market-label">SEARCH SYMBOLS<input type="search" value={symbolQuery} placeholder="Search BTC, ETH…" onChange={(event) => setSymbolQuery(event.target.value)}/></label><div className="symbol-results"><div className="market-subtitle">{symbolBusy ? 'Searching…' : 'SEARCH RESULTS'}</div>{symbolResults.map((result) => <button key={result.symbol} className="symbol-result" onClick={() => { setMarketSymbol(result.symbol); setWatchlist((items) => items.includes(result.symbol) ? items : [result.symbol, ...items].slice(0, 50)); }}><span><b>{result.symbol}</b><small>{result.baseCoin}{result.quoteCoin ? ` / ${result.quoteCoin}` : ''}</small></span><span>{watchlist.includes(result.symbol) ? '✓' : '+'}</span></button>)}</div><div className="watchlist"><div className="market-subtitle">WATCHLIST · {watchlist.length}</div>{watchlist.map((symbol) => <div key={symbol} className={`watchlist-row ${marketSymbol === symbol ? 'watchlist-active' : ''}`}><button onClick={() => setMarketSymbol(symbol)}>{symbol}</button><button aria-label={`Remove ${symbol} from watchlist`} title="Remove from watchlist" onClick={() => setWatchlist((items) => { const next = items.filter((item) => item !== symbol); if (marketSymbol === symbol && next[0]) setMarketSymbol(next[0]); return next; })}>×</button></div>)}</div></section>

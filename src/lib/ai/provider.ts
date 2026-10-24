@@ -1,5 +1,5 @@
 export type AssistantMode = 'general' | 'trading-coach' | 'chart-analysis' | 'journal-review';
-export type ProviderMessage = { role: 'user' | 'assistant'; content: string };
+export type ProviderMessage = { role: 'user' | 'assistant'; content: string; image?: { mimeType: 'image/jpeg' | 'image/png' | 'image/webp'; data: string } };
 export type ProviderConfig = { model: string; apiKey: string; allowPaid: boolean };
 
 /** Models verified against Google's published Standard Free Tier pricing on 2026-10-13. */
@@ -77,7 +77,7 @@ export class GeminiProvider implements ChatProvider {
   constructor(private readonly config: ProviderConfig, private readonly fetcher: typeof fetch = fetch) {}
 
   async *stream(messages: ProviderMessage[], mode: AssistantMode, signal: AbortSignal): AsyncIterable<string> {
-    const contents = messages.map((message) => ({ role: message.role === 'assistant' ? 'model' : 'user', parts: [{ text: message.content }] }));
+    const contents = messages.map((message) => ({ role: message.role === 'assistant' ? 'model' : 'user', parts: [{ text: message.content }, ...(message.image ? [{ inlineData: { mimeType: message.image.mimeType, data: message.image.data } }] : [])] }));
     let response: Response;
     try {
       response = await this.fetcher(geminiEndpoint(this.config.model), {
@@ -148,7 +148,7 @@ export class OpenRouterProvider implements ChatProvider {
         headers: { Authorization: `Bearer ${this.apiKey}`, 'Content-Type': 'application/json', Accept: 'text/event-stream' },
         body: JSON.stringify({
           model: this.model,
-          messages: [{ role: 'system', content: modeInstructions[mode] }, ...messages],
+          messages: [{ role: 'system', content: modeInstructions[mode] }, ...messages.map((message) => message.image ? { role: message.role, content: [{ type: 'text', text: message.content }, { type: 'image_url', image_url: { url: `data:${message.image.mimeType};base64,${message.image.data}` } }] } : message)],
           stream: true,
           max_tokens: 4096,
         }),
@@ -199,7 +199,7 @@ export class OpenRouterProvider implements ChatProvider {
   }
 }
 
-export async function createProvider(id: string, model: string, env: NodeJS.ProcessEnv = process.env): Promise<ChatProvider> {
+export async function createProvider(id: string, model: string, env: NodeJS.ProcessEnv = process.env, requireVision = false): Promise<ChatProvider> {
   if (id === 'gemini') {
     const config = geminiConfiguration(env);
     if (!config) throw new ProviderError('Gemini is not ready. Configure GEMINI_API_KEY and GEMINI_MODEL. With paid access disabled, only a model verified for the free tier is allowed.', undefined, 'provider_not_configured');
@@ -208,7 +208,8 @@ export async function createProvider(id: string, model: string, env: NodeJS.Proc
   }
   if (id === 'openrouter') {
     const { resolveOpenRouterModel } = await import('./openrouter');
-    await resolveOpenRouterModel(model, env);
+    const selected = await resolveOpenRouterModel(model, env);
+    if (requireVision && !selected.inputModalities.includes('image')) throw new ProviderError('The selected OpenRouter model does not advertise image input. Choose a vision-capable model to analyze attachments.', undefined, 'vision_not_supported');
     const apiKey = env.OPENROUTER_API_KEY?.trim();
     if (!apiKey) throw new ProviderError('OpenRouter is not configured. Set OPENROUTER_API_KEY on the server.', undefined, 'provider_not_configured');
     return new OpenRouterProvider(apiKey, model);

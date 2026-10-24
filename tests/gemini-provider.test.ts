@@ -46,3 +46,16 @@ test('provider health validates key and model without generating model output', 
   assert.equal(requestedUrl.includes('private'), false);
   assert.equal(requestedKey, 'private');
 });
+
+
+test('Gemini sends image attachments as inlineData parts for vision models', async () => {
+  let payload: any;
+  const provider = new GeminiProvider({ apiKey: 'key', model: 'gemini-test', allowPaid: true }, async (_input, init) => {
+    payload = JSON.parse(String(init?.body));
+    return new Response('data: {"candidates":[{"content":{"parts":[{"text":"I can see the chart."}]}}]}\n\n', { status: 200 });
+  });
+  const chunks: string[] = [];
+  for await (const chunk of provider.stream([{ role: 'user', content: 'Read this chart', image: { mimeType: 'image/png', data: 'aGVsbG8gd29ybGQ=' } }], 'chart-analysis', new AbortController().signal)) chunks.push(chunk);
+  assert.deepEqual(payload.contents[0].parts[1].inlineData, { mimeType: 'image/png', data: 'aGVsbG8gd29ybGQ=' });
+  assert.deepEqual(chunks, ['I can see the chart.']);
+});
