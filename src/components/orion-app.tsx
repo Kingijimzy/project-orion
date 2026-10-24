@@ -363,17 +363,38 @@ export default function OrionApp() {
     if (!file) return;
     const allowed = ['image/jpeg', 'image/png', 'image/webp'] as const;
     if (!allowed.includes(file.type as typeof allowed[number])) { setChatError('Use a JPEG, PNG, or WebP image. HEIC and GIF are not supported yet.'); return; }
-    if (file.size > 4 * 1024 * 1024) { setChatError('This image is over 4 MB. Choose a smaller image and try again.'); return; }
     try {
+      let processed: Blob = file;
+      let outputName = file.name.slice(0, 180);
+      if (file.size > 4 * 1024 * 1024) {
+        const bitmap = await createImageBitmap(file);
+        const compress = async (maxDimension: number, quality: number): Promise<Blob> => {
+          const scale = Math.min(1, maxDimension / Math.max(bitmap.width, bitmap.height));
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+          canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+          const context = canvas.getContext('2d');
+          if (!context) throw new Error('Your browser could not prepare this image. Try a smaller file.');
+          context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+          const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((value) => value ? resolve(value) : reject(new Error('Orion could not compress this image.')), 'image/jpeg', quality));
+          return blob;
+        };
+        try {
+          processed = await compress(2048, 0.9);
+          if (processed.size > 4 * 1024 * 1024) processed = await compress(1600, 0.8);
+        } finally { bitmap.close(); }
+        if (processed.size > 4 * 1024 * 1024) throw new Error('This image is too large to compress safely. Choose a smaller image.');
+        outputName = file.name.replace(/\.[^.]+$/, '') + '.jpg';
+      }
       const dataUrl = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
         reader.onerror = () => reject(new Error('Orion could not read this image file.'));
         reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('Orion could not decode this image file.'));
-        reader.readAsDataURL(file);
+        reader.readAsDataURL(processed);
       });
       const comma = dataUrl.indexOf(',');
       if (comma < 0) throw new Error('Orion could not decode this image file.');
-      setAttachedImage({ name: file.name.slice(0, 180), mimeType: file.type as PendingImage['mimeType'], data: dataUrl.slice(comma + 1), dataUrl });
+      setAttachedImage({ name: outputName, mimeType: processed.type as PendingImage['mimeType'], data: dataUrl.slice(comma + 1), dataUrl });
       setChatError('');
     } catch (error) { setChatError(error instanceof Error ? error.message : 'Orion could not read this image file.'); }
   }
