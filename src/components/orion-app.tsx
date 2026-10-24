@@ -449,7 +449,7 @@ export default function OrionApp() {
         setMessages((items) => { const next = [...items]; const last = next[next.length - 1]; if (last?.role === 'assistant') { if (last.text) next[next.length - 1] = { ...last, status: 'error' }; else next.pop(); } return next; });
       } else {
         if (image) setAttachedImage(null);
-        setMessages((items) => { const next = [...items]; const last = next[next.length - 1]; if (last?.role === 'assistant') next[next.length - 1] = { ...last, status: undefined }; return next; }
+        setMessages((items) => { const next = [...items]; const last = next[next.length - 1]; if (last?.role === 'assistant') next[next.length - 1] = { ...last, status: undefined }; return next; });
         void loadConversationList().catch(() => {});
       }
     } catch (error) {
