@@ -34,3 +34,17 @@ test('conversation title bounds are enforced', () => {
   assert.equal(validateConversationTitle(''), null);
   assert.equal(validateConversationTitle('x'.repeat(121)), null);
 });
+
+
+test('chat accepts an image-only message with a supported MIME type and bounded base64 data', () => {
+  const parsed = validateChatRequest({ ...valid, message: ' ', image: { mimeType: 'image/png', data: 'aGVsbG8gd29ybGQ=', name: 'chart.png' } });
+  assert.equal(parsed?.message, '[Please analyze the attached image: chart.png.]');
+  assert.deepEqual(parsed?.image, { mimeType: 'image/png', data: 'aGVsbG8gd29ybGQ=', name: 'chart.png' });
+});
+
+test('chat rejects unsupported, malformed, and oversized image attachments', () => {
+  assert.equal(validateChatRequest({ ...valid, image: { mimeType: 'image/heic', data: 'aGVsbG8gd29ybGQ=' } }), null);
+  assert.equal(validateChatRequest({ ...valid, image: { mimeType: 'image/png', data: 'not base64!' } }), null);
+  assert.equal(validateChatRequest({ ...valid, image: { mimeType: 'image/png', data: 'A'.repeat(5_600_004) } }), null);
+  assert.equal(validateChatRequest({ ...valid, message: ' ' }), null);
+});
