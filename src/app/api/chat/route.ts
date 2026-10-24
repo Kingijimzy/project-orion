@@ -51,7 +51,7 @@ export async function POST(request: Request) {
   if (authError || !user) return jsonError(401, 'authentication_required', 'Sign in before sending a message.');
 
   let provider;
-  try { provider = await createProvider(input.provider, input.model); }
+  try { provider = await createProvider(input.provider, input.model, process.env, Boolean(input.image)); }
   catch (error) {
     if (error instanceof ProviderError) return jsonError(503, error.code, error.message);
     return jsonError(503, 'provider_not_configured', 'The selected provider is not configured.');
