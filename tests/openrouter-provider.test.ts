@@ -83,3 +83,12 @@ test('OpenRouter sends image attachments using the multimodal image_url content 
   for await (const _chunk of provider.stream([{ role: 'user', content: 'Describe this', image: { mimeType: 'image/webp', data: 'aGVsbG8gd29ybGQ=' } }], 'general', new AbortController().signal)) { /* consume */ }
   assert.deepEqual(payload.messages[1].content[1], { type: 'image_url', image_url: { url: 'data:image/webp;base64,aGVsbG8gd29ybGQ=' } });
 });
+
+
+test('OpenRouter refuses image requests when the selected model does not advertise image input', async () => {
+  clearOpenRouterModelCacheForTests();
+  const textOnlyCatalog = { data: [{ id: 'text/only', name: 'Text Only', architecture: { input_modalities: ['text'], output_modalities: ['text'] }, pricing: { prompt: '0', completion: '0', request: '0' } }] };
+  const textOnlyEnv = { OPENROUTER_API_KEY: 'private-key', OPENROUTER_ALLOW_PAID_MODEL: 'false' } as unknown as NodeJS.ProcessEnv;
+  await getOpenRouterModels(textOnlyEnv, async () => Response.json(textOnlyCatalog));
+  await assert.rejects(createProvider('openrouter', 'text/only', textOnlyEnv, true), (error: unknown) => error instanceof ProviderError && error.code === 'vision_not_supported');
+});
