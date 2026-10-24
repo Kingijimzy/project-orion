@@ -445,7 +445,7 @@ export default function OrionApp() {
       if (requestId !== activeRequestRef.current) return;
       if (!streamError && !streamDone) streamError = 'The AI stream ended before Orion received a completion signal. Your message is preserved; retry or switch to another available model.';
       if (streamError) {
-        setChatError(streamError); setFailedPrompt(value);
+        setChatError(streamError); setFailedPrompt(messageText);
         setMessages((items) => { const next = [...items]; const last = next[next.length - 1]; if (last?.role === 'assistant') { if (last.text) next[next.length - 1] = { ...last, status: 'error' }; else next.pop(); } return next; });
       } else {
         if (image) setAttachedImage(null);
